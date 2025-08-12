@@ -213,78 +213,17 @@ MVP Simplifications:
 
 #### **Device APIs**
 - **Authentication:** `POST /api/v1/device/auth`
-- **Health Check:** `GET /api/v1/device/health`
-- **Session Management:** `POST /api/v1/session/start`, `DELETE /api/v1/session/end`
 
 #### **Parent Dashboard APIs**
 - **User Management:** `POST /api/v1/users/register`, `POST /api/v1/users/login`
 - **Child Profiles:** `GET/POST/PUT /api/v1/children`
 - **Conversation History:** `GET /api/v1/conversations`
-- **Privacy Controls:** `PUT /api/v1/privacy/settings`
 
 #### **WebSocket Communication (Primary)**
-- **Endpoint:** `wss://api.arunika.com/ws?token=<device_jwt>`
 - **Authentication:** Device certificate + JWT token in query parameter
-- **Connection Management:** Single connection per device ID, automatic reconnection with exponential backoff
-- **Message Types:** Audio chunks, AI responses, control messages, status updates
-- **Compression:** WebSocket per-message deflate for audio data
-- **Heartbeat:** 30-second ping/pong for connection monitoring
-
-#### **WebSocket Message Formats**
-- **Audio Chunk (Device → Server):**
-  ```json
-  {
-    "type": "audio_chunk",
-    "device_id": "ARUN_DEV_001234",
-    "session_id": "sess_abc123def456",
-    "audio_data": "base64_encoded_mulaw_audio",
-    "sample_rate": 8000,
-    "encoding": "MULAW",
-    "timestamp": "2024-08-08T10:30:00Z",
-    "chunk_sequence": 15,
-    "is_final": false
-  }
-  ```
-
-- **Streaming Configuration (Device → Server):**
-  ```json
-  {
-    "type": "stream_config",
-    "device_id": "ARUN_DEV_001234",
-    "config": {
-      "encoding": "MULAW",
-      "sample_rate": 8000,
-      "language": "en-US",
-      "child_mode": true,
-      "personality": "friendly_companion"
-    }
-  }
-  ```
-
-- **AI Response (Server → Device):**
-  ```json
-  {
-    "type": "ai_response",
-    "session_id": "sess_abc123def456",
-    "response_text": "Hello! How are you feeling today?",
-    "audio_data": "base64_encoded_response_audio",
-    "emotion": "cheerful",
-    "educational_content": true,
-    "timestamp": "2024-08-08T10:30:02Z"
-  }
-  ```
-
-- **Transcription Update (Server → Device):**
-  ```json
-  {
-    "type": "transcription",
-    "session_id": "sess_abc123def456",
-    "text": "Hello, how are you",
-    "is_final": false,
-    "confidence": 0.85,
-    "timestamp": "2024-08-08T10:30:01Z"
-  }
-  ```
+- **Connection Management:** Single connection per device ID. Initiate connection on the first interaction (talk to doll), pertahankan koneksi maksimal 30detik setelah voice respon selesai diperdengarkan.
+- **Message Types:** Audio chunks
+- **Heartbeat:** 5-second ping/pong for connection monitoring
 
 ---
 
