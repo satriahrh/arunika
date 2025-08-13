@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"go.uber.org/zap"
@@ -17,6 +18,15 @@ func InitRoutes(e *echo.Echo, hub *websocket.Hub, logger *zap.Logger) {
 			"status":  "ok",
 			"service": "arunika-server",
 		})
+	})
+
+	// WebSocket stats and management endpoints
+	e.GET("/ws/stats", func(c echo.Context) error {
+		return getWebSocketStats(c, hub)
+	})
+	
+	e.GET("/ws/devices", func(c echo.Context) error {
+		return getActiveDevices(c, hub)
 	})
 
 	// API v1 routes
@@ -92,3 +102,53 @@ func getConversations(c echo.Context) error {
 		"message": "Get conversations endpoint - to be implemented",
 	})
 }
+
+// WebSocket management endpoints
+
+// getWebSocketStats returns WebSocket connection statistics
+func getWebSocketStats(c echo.Context, hub *websocket.Hub) error {
+	activeDevices := hub.GetActiveDevices()
+	
+	stats := map[string]interface{}{
+		"active_connections": len(activeDevices),
+		"active_devices":     activeDevices,
+		"server_time":        time.Now().Format(time.RFC3339),
+		"uptime_seconds":     time.Since(startTime).Seconds(),
+	}
+	
+	return c.JSON(http.StatusOK, stats)
+}
+
+// getActiveDevices returns list of currently active devices with session info
+func getActiveDevices(c echo.Context, hub *websocket.Hub) error {
+	activeDeviceIDs := hub.GetActiveDevices()
+	devices := make([]map[string]interface{}, 0, len(activeDeviceIDs))
+	
+	for _, deviceID := range activeDeviceIDs {
+		if session, exists := hub.GetDeviceSession(deviceID); exists {
+			devices = append(devices, map[string]interface{}{
+				"device_id":       session.DeviceID,
+				"user_id":         session.UserID,
+				"session_id":      session.SessionID,
+				"connected_at":    session.ConnectedAt.Format(time.RFC3339),
+				"last_activity":   session.LastActivity.Format(time.RFC3339),
+				"is_active":       session.IsActive,
+				"conversation_id": session.ConversationID,
+			})
+		} else {
+			// Fallback if session not found
+			devices = append(devices, map[string]interface{}{
+				"device_id": deviceID,
+				"status":    "connected_no_session",
+			})
+		}
+	}
+	
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"devices": devices,
+		"count":   len(devices),
+	})
+}
+
+// Server start time for uptime calculation
+var startTime = time.Now()

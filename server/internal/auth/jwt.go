@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"os"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -15,7 +16,17 @@ type JWTClaims struct {
 }
 
 // JWTSecret should be loaded from environment variable
-var JWTSecret = []byte("your-secret-key") // TODO: Load from env
+var JWTSecret = []byte(getJWTSecret())
+
+// getJWTSecret loads JWT secret from environment or uses default for development
+func getJWTSecret() string {
+	secret := os.Getenv("JWT_SECRET")
+	if secret == "" {
+		// Use a default secret for development - should be changed in production
+		secret = "arunika-development-secret-key-change-in-production"
+	}
+	return secret
+}
 
 // GenerateDeviceToken generates a JWT token for device authentication
 func GenerateDeviceToken(deviceID string) (string, error) {
