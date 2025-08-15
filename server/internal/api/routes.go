@@ -42,9 +42,9 @@ func InitRoutes(e *echo.Echo, hub *websocket.Hub, deviceRepo repository.DeviceRe
 	// Conversation History APIs
 	v1.GET("/conversations", getConversations)
 
-	// WebSocket endpoint
+	// WebSocket endpoint with JWT validation
 	e.GET("/ws", func(c echo.Context) error {
-		return websocket.HandleWebSocket(hub, c, logger)
+		return websocketWithAuth(hub, c, logger)
 	})
 }
 
@@ -156,4 +156,59 @@ func getConversations(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{
 		"message": "Get conversations endpoint - to be implemented",
 	})
+}
+
+// websocketWithAuth handles WebSocket connections with JWT authentication
+func websocketWithAuth(hub *websocket.Hub, c echo.Context, logger *zap.Logger) error {
+	// Extract JWT token from Authorization header only
+	var token string
+	authHeader := c.Request().Header.Get("Authorization")
+	if authHeader != "" && len(authHeader) > 7 && authHeader[:7] == "Bearer " {
+		token = authHeader[7:]
+	}
+
+	if token == "" {
+		logger.Warn("WebSocket connection rejected: missing token")
+		return c.JSON(http.StatusUnauthorized, ErrorResponse{
+			Error:   "missing_token",
+			Message: "JWT token is required in Authorization header",
+		})
+	}
+
+	// Validate JWT token
+	claims, err := auth.ValidateToken(token)
+	if err != nil {
+		logger.Warn("WebSocket connection rejected: invalid token", zap.Error(err))
+		return c.JSON(http.StatusUnauthorized, ErrorResponse{
+			Error:   "invalid_token",
+			Message: "Invalid or expired JWT token",
+		})
+	}
+
+	// Verify this is a device token
+	if claims.Role != "device" {
+		logger.Warn("WebSocket connection rejected: invalid role",
+			zap.String("role", claims.Role))
+		return c.JSON(http.StatusForbidden, ErrorResponse{
+			Error:   "invalid_role",
+			Message: "Only device tokens are allowed for WebSocket connections",
+		})
+	}
+
+	// Extract device ID from JWT claims
+	deviceID := claims.DeviceID
+	if deviceID == "" {
+		logger.Error("WebSocket connection rejected: missing device ID in token")
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error:   "invalid_token_claims",
+			Message: "Device ID not found in token",
+		})
+	}
+
+	logger.Info("WebSocket connection authenticated",
+		zap.String("device_id", deviceID),
+		zap.String("role", claims.Role))
+
+	// Handle WebSocket connection with authenticated device ID
+	return websocket.HandleWebSocketWithAuth(hub, c, deviceID, logger)
 }

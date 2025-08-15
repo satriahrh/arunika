@@ -156,6 +156,32 @@ func HandleWebSocket(hub *Hub, c echo.Context, logger *zap.Logger) error {
 	return nil
 }
 
+// HandleWebSocketWithAuth handles websocket requests with pre-authenticated device ID
+func HandleWebSocketWithAuth(hub *Hub, c echo.Context, deviceID string, logger *zap.Logger) error {
+	conn, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
+	if err != nil {
+		logger.Error("WebSocket upgrade failed", zap.Error(err))
+		return err
+	}
+
+	client := &Client{
+		hub:      hub,
+		conn:     conn,
+		send:     make(chan []byte, 256),
+		deviceID: deviceID,
+		logger:   logger,
+	}
+
+	client.hub.register <- client
+
+	// Allow collection of memory referenced by the caller by doing all work in
+	// new goroutines.
+	go client.writePump()
+	go client.readPump()
+
+	return nil
+}
+
 // readPump pumps messages from the websocket connection to the hub.
 func (c *Client) readPump() {
 	defer func() {
