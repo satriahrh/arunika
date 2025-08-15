@@ -1,0 +1,25 @@
+# Test files and temporary directories
+test/
+*.tmp
+tmp/
+
+# Build artifacts
+bin/
+dist/
+
+# Go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
