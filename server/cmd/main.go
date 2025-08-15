@@ -16,6 +16,7 @@ import (
 	"github.com/satriahrh/arunika/server/adapters/speech"
 	"github.com/satriahrh/arunika/server/internal/api"
 	"github.com/satriahrh/arunika/server/internal/websocket"
+	"github.com/satriahrh/arunika/server/repository"
 	"github.com/satriahrh/arunika/server/usecase"
 )
 
@@ -37,6 +38,9 @@ func main() {
 	speechToText := speech.NewMockSpeechToText(logger)
 	textToSpeech := speech.NewMockTextToSpeech(logger)
 
+	// Initialize repositories
+	deviceRepo := repository.NewMockDeviceRepository()
+
 	// Initialize usecase services
 	chatService := usecase.NewChatService(llmService)
 	conversationService := usecase.NewConversationService(speechToText, textToSpeech, chatService, logger)
@@ -46,7 +50,7 @@ func main() {
 	go hub.Run()
 
 	// Initialize API routes
-	api.InitRoutes(e, hub, logger)
+	api.InitRoutes(e, hub, deviceRepo, logger)
 
 	// Start server
 	port := os.Getenv("PORT")
