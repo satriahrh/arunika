@@ -9,7 +9,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/satriahrh/arunika/server/internal/ai"
-	"github.com/satriahrh/arunika/server/internal/models"
+	"github.com/satriahrh/arunika/server/domain"
 	"github.com/satriahrh/arunika/server/internal/saga"
 )
 
@@ -36,7 +36,7 @@ func NewService(sagaManager *saga.Manager, aiService *ai.AIService, logger *zap.
 }
 
 // ProcessAudioChunk processes an audio chunk using the conversation saga
-func (s *Service) ProcessAudioChunk(ctx context.Context, msg *models.AudioChunkMessage) (*models.AIResponseMessage, error) {
+func (s *Service) ProcessAudioChunk(ctx context.Context, msg *domain.AudioChunkMessage) (*domain.AIResponseMessage, error) {
 	s.logger.Info("Processing audio chunk with saga",
 		zap.String("deviceID", msg.DeviceID),
 		zap.String("sessionID", msg.SessionID))
@@ -68,7 +68,7 @@ func (s *Service) ProcessAudioChunk(ctx context.Context, msg *models.AudioChunkM
 	}
 
 	// Build response message from saga result
-	response := &models.AIResponseMessage{
+	response := &domain.AIResponseMessage{
 		Type:      "ai_response",
 		SessionID: msg.SessionID,
 		Timestamp: time.Now().Format(time.RFC3339),

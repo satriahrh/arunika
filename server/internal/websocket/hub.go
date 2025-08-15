@@ -12,6 +12,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/satriahrh/arunika/server/domain"
+	"github.com/satriahrh/arunika/server/internal/auth"
 	"github.com/satriahrh/arunika/server/usecase"
 )
 
@@ -126,18 +127,48 @@ type Client struct {
 
 // HandleWebSocket handles websocket requests from the peer.
 func HandleWebSocket(hub *Hub, c echo.Context, logger *zap.Logger) error {
+	// Authenticate device using JWT token from query parameter
+	token := c.QueryParam("token")
+	if token == "" {
+		logger.Warn("WebSocket connection attempt without token")
+		return echo.NewHTTPError(http.StatusUnauthorized, "Authentication token required")
+	}
+
+	// Validate JWT token
+	claims, err := auth.ValidateToken(token)
+	if err != nil {
+		logger.Warn("WebSocket connection with invalid token", zap.Error(err))
+		return echo.NewHTTPError(http.StatusUnauthorized, "Invalid authentication token")
+	}
+
+	// Ensure this is a device token
+	if claims.Role != "device" {
+		logger.Warn("WebSocket connection with non-device token", 
+			zap.String("role", claims.Role),
+			zap.String("device_id", claims.DeviceID))
+		return echo.NewHTTPError(http.StatusForbidden, "Device token required")
+	}
+
+	// Extract device ID from validated claims
+	deviceID := claims.DeviceID
+	if deviceID == "" {
+		logger.Error("Device token missing device_id claim")
+		return echo.NewHTTPError(http.StatusBadRequest, "Invalid device token: missing device_id")
+	}
+
+	logger.Info("Device authenticated for WebSocket connection", 
+		zap.String("device_id", deviceID))
+
+	// Upgrade connection to WebSocket
 	conn, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
 	if err != nil {
-		logger.Error("WebSocket upgrade failed", zap.Error(err))
+		logger.Error("WebSocket upgrade failed", 
+			zap.String("device_id", deviceID),
+			zap.Error(err))
 		return err
 	}
 
-	// TODO: Extract device ID from JWT token in query parameter
-	deviceID := c.QueryParam("device_id")
-	if deviceID == "" {
-		deviceID = "unknown" // Temporary fallback
-	}
-
+	// Create authenticated client
 	client := &Client{
 		hub:      hub,
 		conn:     conn,
