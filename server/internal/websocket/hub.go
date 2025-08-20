@@ -1,9 +1,11 @@
 package websocket
 
 import (
-	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -11,7 +13,6 @@ import (
 	"github.com/labstack/echo/v4"
 	"go.uber.org/zap"
 
-	"github.com/satriahrh/arunika/server/domain"
 	"github.com/satriahrh/arunika/server/usecase"
 )
 
@@ -122,6 +123,23 @@ type Client struct {
 
 	// Logger
 	logger *zap.Logger
+
+	// Audio streaming session management
+	audioSessions map[string]*AudioSession
+	sessionMutex  sync.RWMutex
+}
+
+// AudioSession manages an ongoing audio streaming session
+type AudioSession struct {
+	SessionID   string
+	StartTime   time.Time
+	LastChunk   time.Time
+	ChunkCount  int
+	TotalChunks int
+	ExpectedSeq int
+	IsActive    bool
+	AudioBuffer [][]byte // Buffer for audio chunks
+	AudioFile   *os.File // File to store audio chunks
 }
 
 // HandleWebSocket handles websocket requests from the peer.
@@ -139,11 +157,12 @@ func HandleWebSocket(hub *Hub, c echo.Context, logger *zap.Logger) error {
 	}
 
 	client := &Client{
-		hub:      hub,
-		conn:     conn,
-		send:     make(chan []byte, 256),
-		deviceID: deviceID,
-		logger:   logger,
+		hub:           hub,
+		conn:          conn,
+		send:          make(chan []byte, 256),
+		deviceID:      deviceID,
+		logger:        logger,
+		audioSessions: make(map[string]*AudioSession),
 	}
 
 	client.hub.register <- client
@@ -165,11 +184,12 @@ func HandleWebSocketWithAuth(hub *Hub, c echo.Context, deviceID string, logger *
 	}
 
 	client := &Client{
-		hub:      hub,
-		conn:     conn,
-		send:     make(chan []byte, 256),
-		deviceID: deviceID,
-		logger:   logger,
+		hub:           hub,
+		conn:          conn,
+		send:          make(chan []byte, 256),
+		deviceID:      deviceID,
+		logger:        logger,
+		audioSessions: make(map[string]*AudioSession),
 	}
 
 	client.hub.register <- client
@@ -185,6 +205,7 @@ func HandleWebSocketWithAuth(hub *Hub, c echo.Context, deviceID string, logger *
 // readPump pumps messages from the websocket connection to the hub.
 func (c *Client) readPump() {
 	defer func() {
+		c.cleanupAudioSessions()
 		c.hub.unregister <- c
 		c.conn.Close()
 	}()
@@ -197,7 +218,7 @@ func (c *Client) readPump() {
 	})
 
 	for {
-		_, message, err := c.conn.ReadMessage()
+		messageType, message, err := c.conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				c.logger.Error("WebSocket error", zap.Error(err))
@@ -205,8 +226,17 @@ func (c *Client) readPump() {
 			break
 		}
 
-		// Process the message (audio chunk, etc.)
-		c.processMessage(message)
+		// Handle different message types for audio streaming
+		switch messageType {
+		case websocket.TextMessage:
+			// Process JSON messages (control messages, metadata)
+			c.processMessage(message)
+		case websocket.BinaryMessage:
+			// Process binary audio data directly
+			c.processBinaryAudioChunk(message)
+		default:
+			c.logger.Warn("Received unknown message type", zap.Int("type", messageType))
+		}
 	}
 }
 
@@ -227,7 +257,26 @@ func (c *Client) writePump() {
 				return
 			}
 
-			if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
+			// Determine message type based on content
+			messageType := websocket.TextMessage
+
+			// Check if this is a binary audio response
+			// You can enhance this logic based on your protocol
+			if len(message) > 0 {
+				// Try to parse as JSON to determine if it's a control message
+				var jsonCheck map[string]interface{}
+				if err := json.Unmarshal(message, &jsonCheck); err != nil {
+					// If not valid JSON, assume it's binary audio data
+					messageType = websocket.BinaryMessage
+				} else if msgType, ok := jsonCheck["type"].(string); ok && msgType == "audio_response" {
+					// If it's an audio response with binary data, we might want to send as binary
+					// This depends on your protocol design
+					messageType = websocket.TextMessage // Keep as JSON for now
+				}
+			}
+
+			if err := c.conn.WriteMessage(messageType, message); err != nil {
+				c.logger.Error("Failed to write message", zap.Error(err))
 				return
 			}
 
@@ -256,74 +305,12 @@ func (c *Client) processMessage(message []byte) {
 	}
 
 	switch msgType {
-	case "audio_chunk":
-		c.handleAudioChunk(msg)
-	case "ping":
-		c.handlePing()
+	case "audio_session_start":
+		c.handleAudioSessionStart(msg)
+	case "audio_session_end":
+		c.handleAudioSessionEnd(msg)
 	default:
 		c.logger.Warn("Unknown message type", zap.String("type", msgType))
-	}
-}
-
-// handleAudioChunk processes audio chunks from the device using conversation service
-func (c *Client) handleAudioChunk(msg map[string]interface{}) {
-	c.logger.Info("Received audio chunk", zap.String("deviceID", c.deviceID))
-
-	// Convert map to AudioChunkMessage
-	audioMsg := &domain.AudioChunkMessage{
-		Type:       "audio_chunk",
-		DeviceID:   c.deviceID,
-		SessionID:  getStringFromMap(msg, "session_id"),
-		AudioData:  getStringFromMap(msg, "audio_data"),
-		SampleRate: getIntFromMap(msg, "sample_rate"),
-		Encoding:   getStringFromMap(msg, "encoding"),
-		Timestamp:  getStringFromMap(msg, "timestamp"),
-		ChunkSeq:   getIntFromMap(msg, "chunk_sequence"),
-		IsFinal:    getBoolFromMap(msg, "is_final"),
-	}
-
-	// Process using conversation service
-	ctx := context.Background()
-	response, err := c.hub.conversationService.ProcessAudioChunk(ctx, audioMsg)
-	if err != nil {
-		c.logger.Error("Failed to process audio chunk", zap.Error(err))
-		c.sendErrorResponse("Failed to process audio")
-		return
-	}
-
-	// Send response back to client
-	responseBytes, err := json.Marshal(response)
-	if err != nil {
-		c.logger.Error("Failed to marshal response", zap.Error(err))
-		c.sendErrorResponse("Failed to generate response")
-		return
-	}
-
-	select {
-	case c.send <- responseBytes:
-	default:
-		close(c.send)
-	}
-}
-
-// sendErrorResponse sends an error response to the client
-func (c *Client) sendErrorResponse(message string) {
-	errorResponse := map[string]interface{}{
-		"type":      "error",
-		"message":   message,
-		"timestamp": time.Now().Unix(),
-	}
-
-	responseBytes, err := json.Marshal(errorResponse)
-	if err != nil {
-		c.logger.Error("Failed to marshal error response", zap.Error(err))
-		return
-	}
-
-	select {
-	case c.send <- responseBytes:
-	default:
-		close(c.send)
 	}
 }
 
@@ -335,33 +322,113 @@ func getStringFromMap(m map[string]interface{}, key string) string {
 	return ""
 }
 
-func getIntFromMap(m map[string]interface{}, key string) int {
-	if val, ok := m[key].(float64); ok {
-		return int(val)
+// processBinaryAudioChunk handles binary audio data
+func (c *Client) processBinaryAudioChunk(data []byte) {
+	c.logger.Info("Received binary audio chunk",
+		zap.String("deviceID", c.deviceID),
+		zap.Int("size", len(data)))
+
+	// For now, we'll assume there's an active session to update counters
+	// In a full implementation, you'd extract session ID from binary headers
+	// or track the current active session per device
+
+	c.sessionMutex.Lock()
+	defer c.sessionMutex.Unlock()
+
+	// Find any active session for this device (simplified approach)
+	var activeSession *AudioSession
+	for _, session := range c.audioSessions {
+		if session.IsActive {
+			activeSession = session
+			break
+		}
 	}
-	if val, ok := m[key].(int); ok {
-		return val
+
+	if activeSession != nil {
+		// Update session counters
+		activeSession.ChunkCount++
+		activeSession.LastChunk = time.Now()
+
+		// Write audio chunk to file
+		if activeSession.AudioFile != nil {
+			_, err := activeSession.AudioFile.Write(data)
+			if err != nil {
+				c.logger.Error("Failed to write audio chunk to file",
+					zap.String("sessionID", activeSession.SessionID),
+					zap.Error(err))
+			} else {
+				c.logger.Debug("Audio chunk written to file",
+					zap.String("sessionID", activeSession.SessionID),
+					zap.Int("chunkSize", len(data)))
+			}
+		}
+
+		c.logger.Debug("Updated session with binary chunk",
+			zap.String("sessionID", activeSession.SessionID),
+			zap.Int("totalChunks", activeSession.ChunkCount))
+	} else {
+		c.logger.Warn("Received binary audio chunk but no active session found",
+			zap.String("deviceID", c.deviceID))
 	}
-	return 0
+
+	// TODO: Process actual audio data with conversation service
 }
 
-func getBoolFromMap(m map[string]interface{}, key string) bool {
-	if val, ok := m[key].(bool); ok {
-		return val
-	}
-	return false
-}
+// handleAudioSessionStart handles the start of an audio streaming session
+func (c *Client) handleAudioSessionStart(msg map[string]interface{}) {
+	sessionID := getStringFromMap(msg, "session_id")
 
-// handlePing responds to ping messages
-func (c *Client) handlePing() {
+	c.sessionMutex.Lock()
+	defer c.sessionMutex.Unlock()
+
+	// Create audio directory if it doesn't exist
+	audioDir := "audio_sessions"
+	if err := os.MkdirAll(audioDir, 0755); err != nil {
+		c.logger.Error("Failed to create audio directory", zap.Error(err))
+		return
+	}
+
+	// Create audio file for this session
+	filename := fmt.Sprintf("%s_%s_%d.raw", c.deviceID, sessionID, time.Now().Unix())
+	filepath := filepath.Join(audioDir, filename)
+
+	audioFile, err := os.Create(filepath)
+	if err != nil {
+		c.logger.Error("Failed to create audio file",
+			zap.String("filepath", filepath),
+			zap.Error(err))
+		return
+	}
+
+	session := &AudioSession{
+		SessionID:   sessionID,
+		StartTime:   time.Now(),
+		LastChunk:   time.Now(),
+		ChunkCount:  0,
+		ExpectedSeq: 0,
+		IsActive:    true,
+		AudioBuffer: make([][]byte, 0),
+		AudioFile:   audioFile,
+	}
+
+	c.audioSessions[sessionID] = session
+
+	c.logger.Info("Audio session started",
+		zap.String("deviceID", c.deviceID),
+		zap.String("sessionID", sessionID),
+		zap.String("audioFile", filepath))
+
+	// Send acknowledgment
 	response := map[string]interface{}{
-		"type":      "pong",
-		"timestamp": time.Now().Unix(),
+		"type":       "audio_session_started",
+		"session_id": sessionID,
+		"timestamp":  time.Now().Unix(),
+		"status":     "ready",
 	}
 
 	responseBytes, err := json.Marshal(response)
 	if err != nil {
-		c.logger.Error("Failed to marshal pong response", zap.Error(err))
+		c.logger.Error("Failed to marshal session start response", zap.Error(err))
 		return
 	}
 
@@ -369,5 +436,88 @@ func (c *Client) handlePing() {
 	case c.send <- responseBytes:
 	default:
 		close(c.send)
+	}
+}
+
+// handleAudioSessionEnd handles the end of an audio streaming session
+func (c *Client) handleAudioSessionEnd(msg map[string]interface{}) {
+	sessionID := getStringFromMap(msg, "session_id")
+
+	c.sessionMutex.Lock()
+	session, exists := c.audioSessions[sessionID]
+	if exists {
+		session.IsActive = false
+		duration := time.Since(session.StartTime)
+
+		// Close the audio file
+		if session.AudioFile != nil {
+			if err := session.AudioFile.Close(); err != nil {
+				c.logger.Error("Failed to close audio file",
+					zap.String("sessionID", sessionID),
+					zap.Error(err))
+			} else {
+				c.logger.Info("Audio file closed successfully",
+					zap.String("sessionID", sessionID))
+			}
+		}
+
+		c.logger.Info("Audio session ended",
+			zap.String("deviceID", c.deviceID),
+			zap.String("sessionID", sessionID),
+			zap.Int("totalChunks", session.ChunkCount),
+			zap.Duration("duration", duration))
+
+		// Clean up session after a delay to allow for any final processing
+		go func() {
+			time.Sleep(5 * time.Second)
+			c.sessionMutex.Lock()
+			delete(c.audioSessions, sessionID)
+			c.sessionMutex.Unlock()
+		}()
+	}
+	c.sessionMutex.Unlock()
+
+	// Send acknowledgment
+	response := map[string]interface{}{
+		"type":       "audio_session_ended",
+		"session_id": sessionID,
+		"timestamp":  time.Now().Unix(),
+		"status":     "completed",
+	}
+
+	if exists {
+		response["total_chunks"] = session.ChunkCount
+		response["duration"] = time.Since(session.StartTime).Seconds()
+	}
+
+	responseBytes, err := json.Marshal(response)
+	if err != nil {
+		c.logger.Error("Failed to marshal session end response", zap.Error(err))
+		return
+	}
+
+	select {
+	case c.send <- responseBytes:
+	default:
+		close(c.send)
+	}
+}
+
+// cleanupAudioSessions closes all open audio files when client disconnects
+func (c *Client) cleanupAudioSessions() {
+	c.sessionMutex.Lock()
+	defer c.sessionMutex.Unlock()
+
+	for sessionID, session := range c.audioSessions {
+		if session.AudioFile != nil {
+			if err := session.AudioFile.Close(); err != nil {
+				c.logger.Error("Failed to close audio file during cleanup",
+					zap.String("sessionID", sessionID),
+					zap.Error(err))
+			} else {
+				c.logger.Info("Audio file closed during cleanup",
+					zap.String("sessionID", sessionID))
+			}
+		}
 	}
 }
