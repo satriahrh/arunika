@@ -50,9 +50,6 @@ type Hub struct {
 	// Unregister requests from clients.
 	unregister chan *Client
 
-	// Inbound messages from the clients.
-	broadcast chan []byte
-
 	// Mutex for thread-safe access to clients map
 	mu sync.RWMutex
 
@@ -68,7 +65,6 @@ func NewHub(conversationService *usecase.ConversationService, logger *zap.Logger
 		clients:             make(map[string]*Client),
 		register:            make(chan *Client),
 		unregister:          make(chan *Client),
-		broadcast:           make(chan []byte),
 		conversationService: conversationService,
 		logger:              logger,
 	}
@@ -92,20 +88,15 @@ func (h *Hub) Run() {
 			}
 			h.mu.Unlock()
 			h.logger.Info("Client unregistered", zap.String("deviceID", client.deviceID))
-
-		case message := <-h.broadcast:
-			h.mu.RLock()
-			for deviceID, client := range h.clients {
-				select {
-				case client.send <- message:
-				default:
-					delete(h.clients, deviceID)
-					close(client.send)
-				}
-			}
-			h.mu.RUnlock()
 		}
 	}
+}
+
+type WriteData struct {
+	// MessageType is the type of the websocket message.
+	// Expect websocket.TextMessage or websocket.BinaryMessage
+	Type    int
+	Payload []byte
 }
 
 // Client is a middleman between the websocket connection and the hub.
@@ -116,7 +107,7 @@ type Client struct {
 	conn *websocket.Conn
 
 	// Buffered channel of outbound messages.
-	send chan []byte
+	send chan WriteData
 
 	// Device ID for this client
 	deviceID string
@@ -159,7 +150,7 @@ func HandleWebSocket(hub *Hub, c echo.Context, logger *zap.Logger) error {
 	client := &Client{
 		hub:           hub,
 		conn:          conn,
-		send:          make(chan []byte, 256),
+		send:          make(chan WriteData, 256),
 		deviceID:      deviceID,
 		logger:        logger,
 		audioSessions: make(map[string]*AudioSession),
@@ -186,7 +177,7 @@ func HandleWebSocketWithAuth(hub *Hub, c echo.Context, deviceID string, logger *
 	client := &Client{
 		hub:           hub,
 		conn:          conn,
-		send:          make(chan []byte, 256),
+		send:          make(chan WriteData, 256),
 		deviceID:      deviceID,
 		logger:        logger,
 		audioSessions: make(map[string]*AudioSession),
@@ -257,25 +248,7 @@ func (c *Client) writePump() {
 				return
 			}
 
-			// Determine message type based on content
-			messageType := websocket.TextMessage
-
-			// Check if this is a binary audio response
-			// You can enhance this logic based on your protocol
-			if len(message) > 0 {
-				// Try to parse as JSON to determine if it's a control message
-				var jsonCheck map[string]interface{}
-				if err := json.Unmarshal(message, &jsonCheck); err != nil {
-					// If not valid JSON, assume it's binary audio data
-					messageType = websocket.BinaryMessage
-				} else if msgType, ok := jsonCheck["type"].(string); ok && msgType == "audio_response" {
-					// If it's an audio response with binary data, we might want to send as binary
-					// This depends on your protocol design
-					messageType = websocket.TextMessage // Keep as JSON for now
-				}
-			}
-
-			if err := c.conn.WriteMessage(messageType, message); err != nil {
+			if err := c.conn.WriteMessage(message.Type, message.Payload); err != nil {
 				c.logger.Error("Failed to write message", zap.Error(err))
 				return
 			}
@@ -433,7 +406,10 @@ func (c *Client) handleAudioSessionStart(msg map[string]interface{}) {
 	}
 
 	select {
-	case c.send <- responseBytes:
+	case c.send <- WriteData{
+		Type:    websocket.TextMessage,
+		Payload: responseBytes,
+	}:
 	default:
 		close(c.send)
 	}
@@ -496,11 +472,120 @@ func (c *Client) handleAudioSessionEnd(msg map[string]interface{}) {
 		return
 	}
 
+	c.logger.Info("Starting audio response goroutine",
+		zap.String("deviceID", c.deviceID),
+		zap.String("sessionID", sessionID))
+
+	go c.responseWithSampleAlso(sessionID)
+
 	select {
-	case c.send <- responseBytes:
+	case c.send <- WriteData{
+		Type:    websocket.TextMessage,
+		Payload: responseBytes,
+	}:
 	default:
 		close(c.send)
 	}
+}
+
+func (c *Client) responseWithSampleAlso(sessionID string) {
+	c.logger.Info("Starting delayed audio response",
+		zap.String("deviceID", c.deviceID),
+		zap.String("sessionID", sessionID),
+		zap.String("delay", "5 seconds"))
+
+	time.Sleep(5 * time.Second)
+
+	c.logger.Info("Sending audio response start message",
+		zap.String("deviceID", c.deviceID),
+		zap.String("sessionID", sessionID))
+
+	startMessage := map[string]interface{}{
+		"type":       "audio_response_started",
+		"session_id": sessionID,
+		"timestamp":  time.Now().Unix(),
+	}
+	responseBytes, _ := json.Marshal(startMessage)
+	c.send <- WriteData{
+		Type:    websocket.TextMessage,
+		Payload: responseBytes,
+	}
+
+	audioFilePath := filepath.Join(".", "sample_audio.wav")
+	audioFileData, err := os.ReadFile(audioFilePath)
+	if err != nil {
+		c.logger.Error("Failed to read sample audio file for response",
+			zap.String("deviceID", c.deviceID),
+			zap.String("sessionID", sessionID),
+			zap.String("filePath", audioFilePath),
+			zap.Error(err))
+		return
+	}
+
+	c.logger.Info("Read sample audio file for response",
+		zap.String("deviceID", c.deviceID),
+		zap.String("sessionID", sessionID),
+		zap.String("filePath", audioFilePath),
+		zap.Int("totalBytes", len(audioFileData)))
+
+	// Send audio data in chunks
+	chunkSize := 1024 // 1KB chunks
+	totalChunks := (len(audioFileData) + chunkSize - 1) / chunkSize
+	sendingChunks := totalChunks / 2
+
+	c.logger.Info("Starting to send audio response chunks",
+		zap.String("deviceID", c.deviceID),
+		zap.String("sessionID", sessionID),
+		zap.Int("totalChunks", totalChunks),
+		zap.Int("sendingChunks", sendingChunks),
+		zap.Int("chunkSize", chunkSize))
+
+	for i := 0; i < sendingChunks; i++ {
+		start := i * chunkSize
+		end := start + chunkSize
+		if end > len(audioFileData) {
+			end = len(audioFileData)
+		}
+
+		audioChunk := audioFileData[start:end]
+
+		c.logger.Debug("Sending audio response chunk",
+			zap.String("deviceID", c.deviceID),
+			zap.String("sessionID", sessionID),
+			zap.Int("chunkNumber", i+1),
+			zap.Int("chunkSize", len(audioChunk)))
+
+		c.send <- WriteData{
+			Type:    websocket.BinaryMessage,
+			Payload: audioChunk,
+		}
+
+		time.Sleep(100 * time.Millisecond) // Small delay between chunks
+	}
+
+	c.logger.Info("Finished sending audio response chunks",
+		zap.String("deviceID", c.deviceID),
+		zap.String("sessionID", sessionID),
+		zap.Int("totalChunksSent", sendingChunks))
+
+	c.logger.Info("Sending audio response end message",
+		zap.String("deviceID", c.deviceID),
+		zap.String("sessionID", sessionID))
+
+	endMessage := map[string]interface{}{
+		"type":       "audio_response_ended",
+		"session_id": sessionID,
+		"timestamp":  time.Now().Unix(),
+	}
+	responseBytes, _ = json.Marshal(endMessage)
+	c.send <- WriteData{
+		Type:    websocket.TextMessage,
+		Payload: responseBytes,
+	}
+
+	c.logger.Info("Audio response completed",
+		zap.String("deviceID", c.deviceID),
+		zap.String("sessionID", sessionID))
 }
 
 // cleanupAudioSessions closes all open audio files when client disconnects
