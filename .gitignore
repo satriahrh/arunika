@@ -10,6 +10,8 @@
 # Go specific
 /server/bin/
 /server/vendor/
+/server/main
+/server/server
 
 # Test binary, built with `go test -c`
 *.test
