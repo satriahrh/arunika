@@ -7,13 +7,14 @@ import (
 	"github.com/labstack/echo/v4"
 	"go.uber.org/zap"
 
+	"github.com/satriahrh/arunika/server/adapters"
+	"github.com/satriahrh/arunika/server/domain/repositories"
 	"github.com/satriahrh/arunika/server/internal/auth"
 	"github.com/satriahrh/arunika/server/internal/websocket"
-	"github.com/satriahrh/arunika/server/repository"
 )
 
 // InitRoutes initializes all API routes
-func InitRoutes(e *echo.Echo, hub *websocket.Hub, deviceRepo repository.DeviceRepository, logger *zap.Logger) {
+func InitRoutes(e *echo.Echo, hub *websocket.Hub, deviceRepo repositories.DeviceRepository, logger *zap.Logger) {
 	// Health check
 	e.GET("/health", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{
@@ -49,7 +50,7 @@ func InitRoutes(e *echo.Echo, hub *websocket.Hub, deviceRepo repository.DeviceRe
 }
 
 // Placeholder handlers - to be implemented
-func deviceAuth(c echo.Context, deviceRepo repository.DeviceRepository, logger *zap.Logger) error {
+func deviceAuth(c echo.Context, deviceRepo repositories.DeviceRepository, logger *zap.Logger) error {
 	var req DeviceAuthRequest
 
 	// Bind and validate request
@@ -70,7 +71,7 @@ func deviceAuth(c echo.Context, deviceRepo repository.DeviceRepository, logger *
 	}
 
 	// Validate device credentials using mock repository
-	mockRepo, ok := deviceRepo.(*repository.MockDeviceRepository)
+	mockRepo, ok := deviceRepo.(*adapters.MockDeviceRepository)
 	if !ok {
 		logger.Error("Expected MockDeviceRepository")
 		return c.JSON(http.StatusInternalServerError, ErrorResponse{

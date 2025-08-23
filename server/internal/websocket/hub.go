@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,7 +14,8 @@ import (
 	"github.com/labstack/echo/v4"
 	"go.uber.org/zap"
 
-	"github.com/satriahrh/arunika/server/usecase"
+	"github.com/satriahrh/arunika/server/adapters/stt"
+	"github.com/satriahrh/arunika/server/domain/repositories"
 )
 
 const (
@@ -53,20 +55,16 @@ type Hub struct {
 	// Mutex for thread-safe access to clients map
 	mu sync.RWMutex
 
-	// Conversation service for processing audio
-	conversationService *usecase.ConversationService
-
 	logger *zap.Logger
 }
 
 // NewHub creates a new WebSocket hub
-func NewHub(conversationService *usecase.ConversationService, logger *zap.Logger) *Hub {
+func NewHub(logger *zap.Logger) *Hub {
 	return &Hub{
-		clients:             make(map[string]*Client),
-		register:            make(chan *Client),
-		unregister:          make(chan *Client),
-		conversationService: conversationService,
-		logger:              logger,
+		clients:    make(map[string]*Client),
+		register:   make(chan *Client),
+		unregister: make(chan *Client),
+		logger:     logger,
 	}
 }
 
@@ -129,8 +127,11 @@ type AudioSession struct {
 	TotalChunks int
 	ExpectedSeq int
 	IsActive    bool
-	AudioBuffer [][]byte // Buffer for audio chunks
-	AudioFile   *os.File // File to store audio chunks
+
+	SpeechToTextContext    context.Context
+	SpeechToTextRepository repositories.SpeechToText
+	SpeechToTextStream     repositories.SpeechToTextStreaming
+	AudioData              [][]byte // Store audio chunks for streaming
 }
 
 // HandleWebSocket handles websocket requests from the peer.
@@ -322,17 +323,12 @@ func (c *Client) processBinaryAudioChunk(data []byte) {
 		activeSession.ChunkCount++
 		activeSession.LastChunk = time.Now()
 
-		// Write audio chunk to file
-		if activeSession.AudioFile != nil {
-			_, err := activeSession.AudioFile.Write(data)
-			if err != nil {
-				c.logger.Error("Failed to write audio chunk to file",
+		// Stream audio data to the speech-to-text service
+		if activeSession.SpeechToTextStream != nil {
+			if err := activeSession.SpeechToTextStream.Stream(data); err != nil {
+				c.logger.Error("Failed to stream audio data",
 					zap.String("sessionID", activeSession.SessionID),
 					zap.Error(err))
-			} else {
-				c.logger.Debug("Audio chunk written to file",
-					zap.String("sessionID", activeSession.SessionID),
-					zap.Int("chunkSize", len(data)))
 			}
 		}
 
@@ -365,14 +361,6 @@ func (c *Client) handleAudioSessionStart(msg map[string]interface{}) {
 	filename := fmt.Sprintf("%s_%s_%d.raw", c.deviceID, sessionID, time.Now().Unix())
 	filepath := filepath.Join(audioDir, filename)
 
-	audioFile, err := os.Create(filepath)
-	if err != nil {
-		c.logger.Error("Failed to create audio file",
-			zap.String("filepath", filepath),
-			zap.Error(err))
-		return
-	}
-
 	session := &AudioSession{
 		SessionID:   sessionID,
 		StartTime:   time.Now(),
@@ -380,9 +368,29 @@ func (c *Client) handleAudioSessionStart(msg map[string]interface{}) {
 		ChunkCount:  0,
 		ExpectedSeq: 0,
 		IsActive:    true,
-		AudioBuffer: make([][]byte, 0),
-		AudioFile:   audioFile,
+
+		SpeechToTextContext:    context.Background(),
+		SpeechToTextRepository: &stt.GoogleSpeechToText{}, // Replace with actual repository
+		AudioData:              make([][]byte, 0),         // Initialize slice for audio data
 	}
+
+	// Initialize streaming transcription
+	audioConfig := repositories.AudioConfig{
+		SampleRate: 48000,      // Example sample rate
+		Language:   "id-ID",    // Example language
+		Encoding:   "LINEAR16", // Example encoding
+	}
+
+	streamInstance, err := session.SpeechToTextRepository.InitTranscribeStreaming(session.SpeechToTextContext, audioConfig)
+	if err != nil {
+		c.logger.Error("Failed to initialize streaming transcription",
+			zap.String("sessionID", sessionID),
+			zap.Error(err))
+		return
+	}
+	session.SpeechToTextStream = streamInstance
+
+	go c.responseWithSampleAlso(sessionID)
 
 	c.audioSessions[sessionID] = session
 
@@ -425,15 +433,21 @@ func (c *Client) handleAudioSessionEnd(msg map[string]interface{}) {
 		session.IsActive = false
 		duration := time.Since(session.StartTime)
 
-		// Close the audio file
-		if session.AudioFile != nil {
-			if err := session.AudioFile.Close(); err != nil {
-				c.logger.Error("Failed to close audio file",
+		// End the streaming transcription and get the result
+		var finalTranscription string
+		var err error
+		if session.SpeechToTextStream != nil {
+			finalTranscription, err = session.SpeechToTextStream.End()
+			if err != nil {
+				c.logger.Error("Failed to end transcription stream",
+					zap.String("deviceID", c.deviceID),
 					zap.String("sessionID", sessionID),
 					zap.Error(err))
 			} else {
-				c.logger.Info("Audio file closed successfully",
-					zap.String("sessionID", sessionID))
+				c.logger.Info("Transcription completed",
+					zap.String("deviceID", c.deviceID),
+					zap.String("sessionID", sessionID),
+					zap.String("transcription", finalTranscription))
 			}
 		}
 
@@ -476,8 +490,6 @@ func (c *Client) handleAudioSessionEnd(msg map[string]interface{}) {
 		zap.String("deviceID", c.deviceID),
 		zap.String("sessionID", sessionID))
 
-	go c.responseWithSampleAlso(sessionID)
-
 	select {
 	case c.send <- WriteData{
 		Type:    websocket.TextMessage,
@@ -489,6 +501,22 @@ func (c *Client) handleAudioSessionEnd(msg map[string]interface{}) {
 }
 
 func (c *Client) responseWithSampleAlso(sessionID string) {
+	c.sessionMutex.RLock()
+	session, exists := c.audioSessions[sessionID]
+	c.sessionMutex.RUnlock()
+
+	if !exists {
+		c.logger.Error("Session not found for audio response",
+			zap.String("deviceID", c.deviceID),
+			zap.String("sessionID", sessionID))
+		return
+	}
+
+	// Wait for the session to end (when IsActive becomes false)
+	for session.IsActive {
+		time.Sleep(100 * time.Millisecond)
+	}
+
 	c.logger.Info("Starting delayed audio response",
 		zap.String("deviceID", c.deviceID),
 		zap.String("sessionID", sessionID),
@@ -588,21 +616,23 @@ func (c *Client) responseWithSampleAlso(sessionID string) {
 		zap.String("sessionID", sessionID))
 }
 
-// cleanupAudioSessions closes all open audio files when client disconnects
+// cleanupAudioSessions closes all streaming sessions when client disconnects
 func (c *Client) cleanupAudioSessions() {
 	c.sessionMutex.Lock()
 	defer c.sessionMutex.Unlock()
 
 	for sessionID, session := range c.audioSessions {
-		if session.AudioFile != nil {
-			if err := session.AudioFile.Close(); err != nil {
-				c.logger.Error("Failed to close audio file during cleanup",
+		if session.SpeechToTextStream != nil {
+			// End the streaming session (ignore result since we're cleaning up)
+			_, err := session.SpeechToTextStream.End()
+			if err != nil {
+				c.logger.Warn("Error ending speech-to-text stream during cleanup",
 					zap.String("sessionID", sessionID),
 					zap.Error(err))
-			} else {
-				c.logger.Info("Audio file closed during cleanup",
-					zap.String("sessionID", sessionID))
 			}
+			c.logger.Info("Ended speech-to-text stream for session",
+				zap.String("sessionID", sessionID))
 		}
+		delete(c.audioSessions, sessionID)
 	}
 }

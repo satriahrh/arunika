@@ -4,18 +4,18 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/satriahrh/arunika/server/repository"
+	"github.com/satriahrh/arunika/server/domain/repositories"
 )
 
 // MockGeminiClient is a placeholder implementation for Gemini LLM
 type MockGeminiClient struct{}
 
 // NewMockGeminiClient creates a new mock Gemini client
-func NewMockGeminiClient() repository.Llm {
+func NewMockGeminiClient() repositories.LargeLanguageModel {
 	return &MockGeminiClient{}
 }
 
-// Generate implements repository.Llm
+// Generate implements repositories.LargeLanguageModel
 func (g *MockGeminiClient) Generate(prompt string) (string, error) {
 	// Mock response for testing
 	return "Halo! Saya adalah boneka pintar Arunika. Bagaimana kabar kamu hari ini?", nil
@@ -28,9 +28,9 @@ func (g *MockGeminiClient) GenerateChat(ctx context.Context, history []repositor
 	}, nil
 }
 
-// MockGeminiChatSession implements repository.ChatSession
+// MockGeminiChatSession implements repositories.ChatSession
 type MockGeminiChatSession struct {
-	history []repository.ChatMessage
+	history []repositories.ChatMessage
 }
 
 // SendMessage implements repository.ChatSession
@@ -47,8 +47,8 @@ func (g *MockGeminiChatSession) SendMessage(ctx context.Context, message reposit
 		response = "Halo! Saya adalah boneka pintar Arunika. Apa yang ingin kamu ceritakan hari ini?"
 	}
 
-	responseMessage := repository.ChatMessage{
-		Role:    repository.DollRole,
+	responseMessage := repositories.ChatMessage{
+		Role:    repositories.DollRole,
 		Content: response,
 	}
 
@@ -58,7 +58,7 @@ func (g *MockGeminiChatSession) SendMessage(ctx context.Context, message reposit
 	return responseMessage, nil
 }
 
-// History implements repository.ChatSession
-func (g *MockGeminiChatSession) History() ([]repository.ChatMessage, error) {
+// History implements repositories.ChatSession
+func (g *MockGeminiChatSession) History() ([]repositories.ChatMessage, error) {
 	return g.history, nil
 }

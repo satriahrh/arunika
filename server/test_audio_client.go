@@ -149,7 +149,7 @@ func testChunkedAudio(c *websocket.Conn) {
 	// Send audio data in chunks
 	chunkSize := 1024 // 1KB chunks
 	totalChunks := (len(audioFileData) + chunkSize - 1) / chunkSize
-	sendingChunks := totalChunks / 2
+	sendingChunks := totalChunks
 
 	log.Printf("📤 Sending %d/%d audio chunks (chunk size: %d bytes)", sendingChunks, totalChunks, chunkSize)
 	audioStartTime := time.Now()
@@ -168,7 +168,7 @@ func testChunkedAudio(c *websocket.Conn) {
 			log.Printf("Error sending audio chunk %d: %v", i, err)
 			return
 		}
-		time.Sleep(100 * time.Millisecond) // Small delay between chunks
+		// time.Sleep(100 * time.Millisecond) // Small delay between chunks
 	}
 
 	audioDuration := time.Since(audioStartTime)

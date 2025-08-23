@@ -12,12 +12,9 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 	"go.uber.org/zap"
 
-	"github.com/satriahrh/arunika/server/adapters/llm"
-	"github.com/satriahrh/arunika/server/adapters/speech"
+	"github.com/satriahrh/arunika/server/adapters"
 	"github.com/satriahrh/arunika/server/internal/api"
 	"github.com/satriahrh/arunika/server/internal/websocket"
-	"github.com/satriahrh/arunika/server/repository"
-	"github.com/satriahrh/arunika/server/usecase"
 )
 
 func main() {
@@ -34,19 +31,10 @@ func main() {
 	e.Use(middleware.CORS())
 
 	// Initialize adapters
-	llmService := llm.NewMockGeminiClient()
-	speechToText := speech.NewMockSpeechToText(logger)
-	textToSpeech := speech.NewMockTextToSpeech(logger)
-
-	// Initialize repositories
-	deviceRepo := repository.NewMockDeviceRepository()
-
-	// Initialize usecase services
-	chatService := usecase.NewChatService(llmService)
-	conversationService := usecase.NewConversationService(speechToText, textToSpeech, chatService, logger)
+	deviceRepo := adapters.NewMockDeviceRepository()
 
 	// Initialize WebSocket hub with conversation service
-	hub := websocket.NewHub(conversationService, logger)
+	hub := websocket.NewHub(logger)
 	go hub.Run()
 
 	// Initialize API routes
