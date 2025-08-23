@@ -7,7 +7,6 @@ import (
 	"github.com/labstack/echo/v4"
 	"go.uber.org/zap"
 
-	"github.com/satriahrh/arunika/server/adapters"
 	"github.com/satriahrh/arunika/server/domain/repositories"
 	"github.com/satriahrh/arunika/server/internal/auth"
 	"github.com/satriahrh/arunika/server/internal/websocket"
@@ -70,17 +69,8 @@ func deviceAuth(c echo.Context, deviceRepo repositories.DeviceRepository, logger
 		})
 	}
 
-	// Validate device credentials using mock repository
-	mockRepo, ok := deviceRepo.(*adapters.MockDeviceRepository)
-	if !ok {
-		logger.Error("Expected MockDeviceRepository")
-		return c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "internal_error",
-			Message: "Repository configuration error",
-		})
-	}
-
-	device, err := mockRepo.ValidateDevice(req.SerialNumber, req.SecretKey)
+	// Validate device credentials
+	device, err := deviceRepo.ValidateDevice(req.SerialNumber, req.SecretKey)
 	if err != nil {
 		logger.Warn("Device authentication failed",
 			zap.String("serial_number", req.SerialNumber),

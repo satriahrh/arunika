@@ -24,6 +24,8 @@ type DeviceRepository interface {
 	GetByOwnerID(ctx context.Context, ownerID string) ([]*entities.Device, error)
 	Update(ctx context.Context, device *entities.Device) error
 	Delete(ctx context.Context, id string) error
+	// ValidateDevice validates device credentials for authentication
+	ValidateDevice(serialNumber, secret string) (*entities.Device, error)
 }
 
 // ConversationRepository defines data access methods for conversations
