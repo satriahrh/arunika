@@ -4,8 +4,6 @@ import "context"
 
 // LargeLanguageModel abstracts any chat/LLM provider
 type LargeLanguageModel interface {
-	// Generate takes a user prompt and returns the model's reply
-	Generate(prompt string) (string, error)
 	// GenerateChat creates a chat session with history
 	GenerateChat(ctx context.Context, history []ChatMessage) (ChatSession, error)
 }
