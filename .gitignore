@@ -9,6 +9,7 @@
 
 # Go specific
 /server/bin/
+/server/server
 /server/vendor/
 
 # Test binary, built with `go test -c`

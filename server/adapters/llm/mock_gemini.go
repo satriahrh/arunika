@@ -21,8 +21,8 @@ func (g *MockGeminiClient) Generate(prompt string) (string, error) {
 	return "Halo! Saya adalah boneka pintar Arunika. Bagaimana kabar kamu hari ini?", nil
 }
 
-// GenerateChat implements repository.Llm
-func (g *MockGeminiClient) GenerateChat(ctx context.Context, history []repository.ChatMessage) (repository.ChatSession, error) {
+// GenerateChat implements repositories.LargeLanguageModel
+func (g *MockGeminiClient) GenerateChat(ctx context.Context, history []repositories.ChatMessage) (repositories.ChatSession, error) {
 	return &MockGeminiChatSession{
 		history: history,
 	}, nil
@@ -33,8 +33,8 @@ type MockGeminiChatSession struct {
 	history []repositories.ChatMessage
 }
 
-// SendMessage implements repository.ChatSession
-func (g *MockGeminiChatSession) SendMessage(ctx context.Context, message repository.ChatMessage) (repository.ChatMessage, error) {
+// SendMessage implements repositories.ChatSession
+func (g *MockGeminiChatSession) SendMessage(ctx context.Context, message repositories.ChatMessage) (repositories.ChatMessage, error) {
 	// Add user message to history
 	g.history = append(g.history, message)
 
