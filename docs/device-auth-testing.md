@@ -6,16 +6,16 @@ This document details the comprehensive testing performed on the JWT-based devic
 ## Test Environment
 - **Server**: `localhost:8080`
 - **Date**: August 16, 2025
-- **Implementation**: JWT-only authentication with mock device repository
+- **Implementation**: JWT-only authentication with in-memory device repository
 
-## Pre-registered Test Devices
-The mock repository contains three pre-registered devices:
+## Pre-registered Demo Devices
+The in-memory repository contains three demo devices for development:
 
 | Serial Number | Secret Key | Device ID | Model |
 |---------------|------------|-----------|--------|
-| ARUNIKA001    | secret123  | device-ARUNIKA001 | doll-v1 |
-| ARUNIKA002    | secret456  | device-ARUNIKA002 | doll-v1 |
-| ARUNIKA003    | secret789  | device-ARUNIKA003 | doll-v2 |
+| ARUNIKA001    | secret123  | (UUID generated) | doll-v1 |
+| ARUNIKA002    | secret456  | (UUID generated) | doll-v1 |
+| ARUNIKA003    | secret789  | (UUID generated) | doll-v2 |
 
 ## Test Cases and Results
 
@@ -228,7 +228,7 @@ curl -X GET http://localhost:8080/health
 ### ✅ Code Structure
 - **Separation of Concerns**: Authentication logic separated from HTTP handling
 - **Proper Logging**: Success and failure events are logged with appropriate context
-- **Mock Repository**: Clean interface implementation for testing
+- **Memory Repository**: Production-ready in-memory storage implementation
 
 ### ✅ API Design
 - **RESTful Design**: Follows REST conventions
@@ -260,7 +260,7 @@ The device authentication implementation successfully passes all test cases and 
 1. **Load Testing**: Test with multiple concurrent authentication requests
 2. **Integration Testing**: Test JWT token usage in WebSocket connections
 3. **Security Audit**: Review JWT secret management and token validation
-4. **Database Integration**: Replace mock repository with actual database implementation
+4. **Database Integration**: Implement persistent database storage (currently using in-memory storage)
 
 ---
 
