@@ -7,6 +7,7 @@ toolchain go1.23.1
 require (
 	cloud.google.com/go/speech v1.28.0
 	github.com/golang-jwt/jwt/v5 v5.0.0
+	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.0
 	github.com/labstack/echo/v4 v4.11.1
 	go.uber.org/zap v1.25.0

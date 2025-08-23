@@ -13,6 +13,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/satriahrh/arunika/server/adapters"
+	"github.com/satriahrh/arunika/server/domain/entities"
 	"github.com/satriahrh/arunika/server/internal/api"
 	"github.com/satriahrh/arunika/server/internal/websocket"
 )
@@ -31,7 +32,12 @@ func main() {
 	e.Use(middleware.CORS())
 
 	// Initialize adapters
-	deviceRepo := adapters.NewMockDeviceRepository()
+	deviceRepo := adapters.NewMemoryDeviceRepository()
+
+	// Bootstrap with demo devices for development (in production, devices would be provisioned through separate APIs)
+	if err := bootstrapDemoDevices(deviceRepo, logger); err != nil {
+		logger.Warn("Failed to bootstrap demo devices", zap.Error(err))
+	}
 
 	// Initialize WebSocket hub with conversation service
 	hub := websocket.NewHub(logger)
@@ -70,4 +76,47 @@ func main() {
 	}
 
 	logger.Info("Server exited")
+}
+
+// bootstrapDemoDevices sets up demo devices for development and testing
+// In production, devices would be provisioned through device management APIs
+func bootstrapDemoDevices(deviceRepo *adapters.MemoryDeviceRepository, logger *zap.Logger) error {
+	ctx := context.Background()
+
+	// Demo devices with production-style IDs and credentials
+	demoDevices := []struct {
+		serialNumber string
+		secret       string
+		model        string
+	}{
+		{"ARUNIKA001", "secret123", "doll-v1"},
+		{"ARUNIKA002", "secret456", "doll-v1"},
+		{"ARUNIKA003", "secret789", "doll-v2"},
+	}
+
+	for _, demo := range demoDevices {
+		// Create device entity
+		device := &entities.Device{
+			SerialNumber: demo.serialNumber,
+			Model:        demo.model,
+			OwnerID:      nil, // No owner initially
+		}
+
+		// Create device in repository
+		if err := deviceRepo.Create(ctx, device); err != nil {
+			return err
+		}
+
+		// Register device secret for authentication
+		if err := deviceRepo.RegisterDeviceSecret(demo.serialNumber, demo.secret); err != nil {
+			return err
+		}
+
+		logger.Info("Bootstrapped demo device",
+			zap.String("serial_number", demo.serialNumber),
+			zap.String("device_id", device.ID),
+			zap.String("model", demo.model))
+	}
+
+	return nil
 }
