@@ -453,8 +453,6 @@ func (c *Client) handleAudioSessionEnd(msg map[string]interface{}) {
 	session, exists := c.audioSessions[sessionID]
 	if exists {
 		session.IsActive = false
-		duration := time.Since(session.StartTime)
-
 		// End the streaming transcription and get the result
 		var finalTranscription string
 		var err error
@@ -473,19 +471,7 @@ func (c *Client) handleAudioSessionEnd(msg map[string]interface{}) {
 			}
 		}
 
-		c.logger.Info("Audio session ended",
-			zap.String("deviceID", c.deviceID),
-			zap.String("sessionID", sessionID),
-			zap.Int("totalChunks", session.ChunkCount),
-			zap.Duration("duration", duration))
-
-		// Clean up session after a delay to allow for any final processing
-		go func() {
-			time.Sleep(5 * time.Second)
-			c.sessionMutex.Lock()
-			delete(c.audioSessions, sessionID)
-			c.sessionMutex.Unlock()
-		}()
+		go c.responseAudio(sessionID, finalTranscription)
 	}
 
 	// Send acknowledgment
@@ -504,6 +490,30 @@ func (c *Client) handleAudioSessionEnd(msg map[string]interface{}) {
 	c.logger.Info("Starting audio response goroutine",
 		zap.String("deviceID", c.deviceID),
 		zap.String("sessionID", sessionID))
+}
+
+func (c *Client) responseAudio(sessionID string, finalTranscription string) {
+	session := c.audioSessions[sessionID]
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	chatResponse, err := session.ChatSession.SendMessage(ctx, repositories.ChatMessage{
+		Role:    repositories.UserRole,
+		Content: finalTranscription,
+	})
+	if err != nil {
+		c.logger.Error("Failed to send message to chat session",
+			zap.String("deviceID", c.deviceID),
+			zap.String("sessionID", sessionID),
+			zap.Error(err))
+		return
+	}
+
+	c.logger.Info("Received chat response",
+		zap.String("deviceID", c.deviceID),
+		zap.String("sessionID", sessionID),
+		zap.String("response", chatResponse.Content))
 }
 
 func (c *Client) responseWithSampleAlso(sessionID string) {

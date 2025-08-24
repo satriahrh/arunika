@@ -13,17 +13,19 @@ import (
 // GeminiChatSession implements the ChatSession interface
 type GeminiChatSession struct {
 	client  *genai.Client
+	logger  *zap.Logger
 	model   string
 	history []*genai.Content
 }
 
 // NewGeminiChatSession creates a new chat session with history
-func NewGeminiChatSession(client *genai.Client, model string, history []repositories.ChatMessage) (*GeminiChatSession, error) {
+func NewGeminiChatSession(client *genai.Client, logger *zap.Logger, model string, history []repositories.ChatMessage) (*GeminiChatSession, error) {
 	// Convert repository format to Gemini format
 	geminiHistory := convertRepositoryToGeminiFormat(history)
 
 	return &GeminiChatSession{
 		client:  client,
+		logger:  logger,
 		model:   model,
 		history: geminiHistory,
 	}, nil

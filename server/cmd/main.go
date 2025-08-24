@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joho/godotenv"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"go.uber.org/zap"
@@ -20,6 +21,8 @@ import (
 )
 
 func main() {
+	godotenv.Load()
+
 	// Initialize logger
 	logger, _ := zap.NewProduction()
 	defer logger.Sync()
