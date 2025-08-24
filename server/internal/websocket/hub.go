@@ -348,7 +348,12 @@ func (c *Client) processBinaryAudioChunk(data []byte) {
 // handleAudioSessionStart handles the start of an audio streaming session
 func (c *Client) handleAudioSessionStart(msg map[string]interface{}) {
 	sessionID := getStringFromMap(msg, "session_id")
-	var response map[string]interface{}
+	var response map[string]interface{} = map[string]interface{}{
+		"type":       "audio_session_started",
+		"session_id": sessionID,
+		"timestamp":  time.Now().Unix(),
+		"status":     "unknown",
+	}
 
 	c.sessionMutex.Lock()
 	defer func() {
@@ -434,7 +439,12 @@ func (c *Client) handleAudioSessionStart(msg map[string]interface{}) {
 // handleAudioSessionEnd handles the end of an audio streaming session
 func (c *Client) handleAudioSessionEnd(msg map[string]interface{}) {
 	sessionID := getStringFromMap(msg, "session_id")
-	var response map[string]interface{}
+	var response map[string]interface{} = map[string]interface{}{
+		"type":       "audio_session_ended",
+		"session_id": sessionID,
+		"timestamp":  time.Now().Unix(),
+		"status":     "unknown",
+	}
 
 	c.sessionMutex.Lock()
 	defer func() {
