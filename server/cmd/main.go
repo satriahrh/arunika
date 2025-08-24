@@ -13,6 +13,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/satriahrh/arunika/server/adapters"
+	"github.com/satriahrh/arunika/server/adapters/llm"
 	"github.com/satriahrh/arunika/server/domain/entities"
 	"github.com/satriahrh/arunika/server/internal/api"
 	"github.com/satriahrh/arunika/server/internal/websocket"
@@ -33,6 +34,10 @@ func main() {
 
 	// Initialize adapters
 	deviceRepo := adapters.NewMemoryDeviceRepository()
+	geminiLLMRepo, err := llm.NewGeminiLLM(logger)
+	if err != nil {
+		logger.Fatal("Failed to create Gemini LLM", zap.Error(err))
+	}
 
 	// Bootstrap with demo devices for development (in production, devices would be provisioned through separate APIs)
 	if err := bootstrapDemoDevices(deviceRepo, logger); err != nil {
@@ -40,7 +45,7 @@ func main() {
 	}
 
 	// Initialize WebSocket hub with conversation service
-	hub := websocket.NewHub(logger)
+	hub := websocket.NewHub(geminiLLMRepo, logger)
 	go hub.Run()
 
 	// Initialize API routes

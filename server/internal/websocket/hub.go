@@ -3,7 +3,6 @@ package websocket
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -55,15 +54,18 @@ type Hub struct {
 	// Mutex for thread-safe access to clients map
 	mu sync.RWMutex
 
+	llm repositories.LargeLanguageModel
+
 	logger *zap.Logger
 }
 
 // NewHub creates a new WebSocket hub
-func NewHub(logger *zap.Logger) *Hub {
+func NewHub(llm repositories.LargeLanguageModel, logger *zap.Logger) *Hub {
 	return &Hub{
 		clients:    make(map[string]*Client),
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
+		llm:        llm,
 		logger:     logger,
 	}
 }
@@ -131,7 +133,7 @@ type AudioSession struct {
 	SpeechToTextContext    context.Context
 	SpeechToTextRepository repositories.SpeechToText
 	SpeechToTextStream     repositories.SpeechToTextStreaming
-	AudioData              [][]byte // Store audio chunks for streaming
+	ChatSession            repositories.ChatSession
 }
 
 // HandleWebSocket handles websocket requests from the peer.
@@ -346,32 +348,35 @@ func (c *Client) processBinaryAudioChunk(data []byte) {
 // handleAudioSessionStart handles the start of an audio streaming session
 func (c *Client) handleAudioSessionStart(msg map[string]interface{}) {
 	sessionID := getStringFromMap(msg, "session_id")
+	var response map[string]interface{}
 
 	c.sessionMutex.Lock()
-	defer c.sessionMutex.Unlock()
+	defer func() {
+		responseBytes, _ := json.Marshal(response)
+		select {
+		case c.send <- WriteData{
+			Type:    websocket.TextMessage,
+			Payload: responseBytes,
+		}:
+		default:
+			close(c.send)
+		}
+		c.sessionMutex.Unlock()
+	}()
 
-	// Create audio directory if it doesn't exist
-	audioDir := "audio_sessions"
-	if err := os.MkdirAll(audioDir, 0755); err != nil {
-		c.logger.Error("Failed to create audio directory", zap.Error(err))
-		return
-	}
+	session, ok := c.audioSessions[sessionID]
+	if !ok {
+		session = &AudioSession{
+			SessionID:   sessionID,
+			StartTime:   time.Now(),
+			LastChunk:   time.Now(),
+			ChunkCount:  0,
+			ExpectedSeq: 0,
+			IsActive:    true,
 
-	// Create audio file for this session
-	filename := fmt.Sprintf("%s_%s_%d.raw", c.deviceID, sessionID, time.Now().Unix())
-	filepath := filepath.Join(audioDir, filename)
-
-	session := &AudioSession{
-		SessionID:   sessionID,
-		StartTime:   time.Now(),
-		LastChunk:   time.Now(),
-		ChunkCount:  0,
-		ExpectedSeq: 0,
-		IsActive:    true,
-
-		SpeechToTextContext:    context.Background(),
-		SpeechToTextRepository: &stt.GoogleSpeechToText{}, // Replace with actual repository
-		AudioData:              make([][]byte, 0),         // Initialize slice for audio data
+			SpeechToTextContext:    context.Background(),
+			SpeechToTextRepository: &stt.GoogleSpeechToText{}, // Replace with actual repository
+		}
 	}
 
 	// Initialize streaming transcription
@@ -386,48 +391,65 @@ func (c *Client) handleAudioSessionStart(msg map[string]interface{}) {
 		c.logger.Error("Failed to initialize streaming transcription",
 			zap.String("sessionID", sessionID),
 			zap.Error(err))
+		response = map[string]interface{}{
+			"type":       "audio_session_started",
+			"session_id": sessionID,
+			"timestamp":  time.Now().Unix(),
+			"status":     "speech_to_text_not_ready",
+		}
 		return
 	}
 	session.SpeechToTextStream = streamInstance
 
-	go c.responseWithSampleAlso(sessionID)
+	chatSession, err := c.hub.llm.GenerateChat(context.Background(), []repositories.ChatMessage{})
+	if err != nil {
+		c.logger.Error("Failed to generate chat session",
+			zap.String("sessionID", sessionID),
+			zap.Error(err))
+		response = map[string]interface{}{
+			"type":       "audio_session_started",
+			"session_id": sessionID,
+			"timestamp":  time.Now().Unix(),
+			"status":     "chat_not_ready",
+		}
+		return
+	}
+	session.ChatSession = chatSession
 
 	c.audioSessions[sessionID] = session
 
 	c.logger.Info("Audio session started",
 		zap.String("deviceID", c.deviceID),
-		zap.String("sessionID", sessionID),
-		zap.String("audioFile", filepath))
+		zap.String("sessionID", sessionID))
 
 	// Send acknowledgment
-	response := map[string]interface{}{
+	response = map[string]interface{}{
 		"type":       "audio_session_started",
 		"session_id": sessionID,
 		"timestamp":  time.Now().Unix(),
 		"status":     "ready",
-	}
-
-	responseBytes, err := json.Marshal(response)
-	if err != nil {
-		c.logger.Error("Failed to marshal session start response", zap.Error(err))
-		return
-	}
-
-	select {
-	case c.send <- WriteData{
-		Type:    websocket.TextMessage,
-		Payload: responseBytes,
-	}:
-	default:
-		close(c.send)
 	}
 }
 
 // handleAudioSessionEnd handles the end of an audio streaming session
 func (c *Client) handleAudioSessionEnd(msg map[string]interface{}) {
 	sessionID := getStringFromMap(msg, "session_id")
+	var response map[string]interface{}
 
 	c.sessionMutex.Lock()
+	defer func() {
+		responseBytes, _ := json.Marshal(response)
+		select {
+		case c.send <- WriteData{
+			Type:    websocket.TextMessage,
+			Payload: responseBytes,
+		}:
+		default:
+			close(c.send)
+		}
+		c.sessionMutex.Unlock()
+	}()
+
 	session, exists := c.audioSessions[sessionID]
 	if exists {
 		session.IsActive = false
@@ -465,10 +487,9 @@ func (c *Client) handleAudioSessionEnd(msg map[string]interface{}) {
 			c.sessionMutex.Unlock()
 		}()
 	}
-	c.sessionMutex.Unlock()
 
 	// Send acknowledgment
-	response := map[string]interface{}{
+	response = map[string]interface{}{
 		"type":       "audio_session_ended",
 		"session_id": sessionID,
 		"timestamp":  time.Now().Unix(),
@@ -480,24 +501,9 @@ func (c *Client) handleAudioSessionEnd(msg map[string]interface{}) {
 		response["duration"] = time.Since(session.StartTime).Seconds()
 	}
 
-	responseBytes, err := json.Marshal(response)
-	if err != nil {
-		c.logger.Error("Failed to marshal session end response", zap.Error(err))
-		return
-	}
-
 	c.logger.Info("Starting audio response goroutine",
 		zap.String("deviceID", c.deviceID),
 		zap.String("sessionID", sessionID))
-
-	select {
-	case c.send <- WriteData{
-		Type:    websocket.TextMessage,
-		Payload: responseBytes,
-	}:
-	default:
-		close(c.send)
-	}
 }
 
 func (c *Client) responseWithSampleAlso(sessionID string) {
