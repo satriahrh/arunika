@@ -516,6 +516,7 @@ func (c *Client) responseAudio(sessionID string, finalTranscription string) {
 		zap.String("response", chatResponse.Content))
 }
 
+// responseWithSampleAlso deprecated
 func (c *Client) responseWithSampleAlso(sessionID string) {
 	c.sessionMutex.RLock()
 	session, exists := c.audioSessions[sessionID]
