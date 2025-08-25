@@ -134,6 +134,7 @@ type AudioSession struct {
 	SpeechToTextRepository repositories.SpeechToText
 	SpeechToTextStream     repositories.SpeechToTextStreaming
 	ChatSession            repositories.ChatSession
+	TextToSpeechRepository repositories.TextToSpeech
 }
 
 // HandleWebSocket handles websocket requests from the peer.
@@ -524,6 +525,41 @@ func (c *Client) responseAudio(sessionID string, finalTranscription string) {
 		zap.String("deviceID", c.deviceID),
 		zap.String("sessionID", sessionID),
 		zap.String("response", chatResponse.Content))
+
+	audioDataChan, err := session.TextToSpeechRepository.ConvertTextToSpeech(ctx, chatResponse.Content)
+	if err != nil {
+		c.logger.Error("Failed to convert text to speech",
+			zap.String("deviceID", c.deviceID),
+			zap.String("sessionID", sessionID),
+			zap.Error(err))
+		return
+	}
+
+	responseBytes, _ := json.Marshal(map[string]interface{}{
+		"type":       "audio_response_started",
+		"session_id": sessionID,
+		"timestamp":  time.Now().Unix(),
+	})
+	c.send <- WriteData{
+		Type:    websocket.TextMessage,
+		Payload: responseBytes,
+	}
+	for audioData := range audioDataChan {
+		c.send <- WriteData{
+			Type:    websocket.BinaryMessage,
+			Payload: audioData,
+		}
+	}
+
+	responseBytes, _ = json.Marshal(map[string]interface{}{
+		"type":       "audio_response_ended",
+		"session_id": sessionID,
+		"timestamp":  time.Now().Unix(),
+	})
+	c.send <- WriteData{
+		Type:    websocket.TextMessage,
+		Payload: responseBytes,
+	}
 }
 
 // responseWithSampleAlso deprecated
