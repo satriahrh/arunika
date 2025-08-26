@@ -14,6 +14,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/satriahrh/arunika/server/adapters/stt"
+	"github.com/satriahrh/arunika/server/adapters/tts"
 	"github.com/satriahrh/arunika/server/domain/repositories"
 )
 
@@ -372,6 +373,21 @@ func (c *Client) handleAudioSessionStart(msg map[string]interface{}) {
 
 	session, ok := c.audioSessions[sessionID]
 	if !ok {
+		// Initialize TTS repository
+		ttsRepo, err := tts.NewElevenLabsTTS(c.logger)
+		if err != nil {
+			c.logger.Error("Failed to initialize TTS repository",
+				zap.String("sessionID", sessionID),
+				zap.Error(err))
+			response = map[string]interface{}{
+				"type":       "audio_session_started",
+				"session_id": sessionID,
+				"timestamp":  time.Now().Unix(),
+				"status":     "tts_not_ready",
+			}
+			return
+		}
+
 		session = &AudioSession{
 			SessionID:   sessionID,
 			StartTime:   time.Now(),
@@ -382,6 +398,7 @@ func (c *Client) handleAudioSessionStart(msg map[string]interface{}) {
 
 			SpeechToTextContext:    context.Background(),
 			SpeechToTextRepository: &stt.GoogleSpeechToText{}, // Replace with actual repository
+			TextToSpeechRepository: ttsRepo,
 		}
 	}
 
