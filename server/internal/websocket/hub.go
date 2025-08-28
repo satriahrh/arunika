@@ -374,7 +374,8 @@ func (c *Client) handleAudioSessionStart(msg map[string]interface{}) {
 	session, ok := c.audioSessions[sessionID]
 	if !ok {
 		// Initialize TTS repository
-		ttsRepo, err := tts.NewElevenLabsTTS(c.logger)
+		ttsRepoConfig := tts.NewElevenLabsConfigFromEnv()
+		ttsRepo, err := tts.NewElevenLabsTTS(ttsRepoConfig, c.logger)
 		if err != nil {
 			c.logger.Error("Failed to initialize TTS repository",
 				zap.String("sessionID", sessionID),

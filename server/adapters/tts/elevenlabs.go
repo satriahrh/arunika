@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,18 +18,46 @@ import (
 )
 
 const (
-	elevenLabsAPIBaseURL = "https://api.elevenlabs.io/v1"
-	defaultVoiceID       = "21m00Tcm4TlvDq8ikWAM" // Rachel voice
-	chunkSize            = 1024                   // Size of audio chunks to stream
-	defaultOutputFormat  = "pcm_24000"            // PCM format for real-time applications
+	defaultAPIBaseURL   = "https://api.elevenlabs.io/v1"
+	defaultVoiceID      = "21m00Tcm4TlvDq8ikWAM"   // Rachel voice
+	defaultChunkSize    = 1024                     // Size of audio chunks to stream
+	defaultOutputFormat = "pcm_24000"              // PCM format for real-time applications
+	defaultModelID      = "eleven_multilingual_v2" // Default model ID
+	defaultStability    = 0.5                      // Default voice stability
+	defaultClarity      = 0.75                     // Default voice clarity/similarity_boost
 )
+
+// ElevenLabsConfig holds configuration for the ElevenLabsTTS adapter
+// This struct should be used to configure the ElevenLabsTTS adapter
+// Required fields:
+// - APIKey: Your Eleven Labs API key
+// Optional fields with defaults:
+// - APIBaseURL: The base URL for the Eleven Labs API (default: "https://api.elevenlabs.io/v1")
+// - VoiceID: The voice ID to use (default: "21m00Tcm4TlvDq8ikWAM" - Rachel voice)
+// - ModelID: The model ID to use (default: "eleven_multilingual_v2")
+// - OutputFormat: The output format (default: "pcm_24000")
+// - ChunkSize: The size of audio chunks to stream (default: 1024)
+// - Stability: Voice stability value between 0 and 1 (default: 0.5)
+// - Clarity: Voice clarity/similarity boost value between 0 and 1 (default: 0.75)
+type ElevenLabsConfig struct {
+	APIKey       string  // Required: Your Eleven Labs API key
+	APIBaseURL   string  // Optional: The base URL for the Eleven Labs API
+	VoiceID      string  // Optional: The voice ID to use
+	ModelID      string  // Optional: The model ID to use
+	OutputFormat string  // Optional: The output format
+	ChunkSize    int     // Optional: The size of audio chunks to stream
+	Stability    float64 // Optional: Voice stability value between 0 and 1
+	Clarity      float64 // Optional: Voice clarity/similarity boost value between 0 and 1
+}
 
 // ElevenLabsTTS implements TextToSpeech interface using Eleven Labs API
 type ElevenLabsTTS struct {
 	apiKey       string
+	apiBaseURL   string
 	voiceID      string
 	modelID      string
 	outputFormat string
+	chunkSize    int
 	stability    float64
 	clarity      float64
 	logger       *zap.Logger
@@ -54,38 +83,90 @@ type ElevenLabsRequest struct {
 	ApplyTextNormalization string                  `json:"apply_text_normalization,omitempty"`
 }
 
-// NewElevenLabsTTS creates a new Eleven Labs TTS instance
-func NewElevenLabsTTS(logger *zap.Logger) (*ElevenLabsTTS, error) {
-	apiKey := os.Getenv("ELEVEN_LABS_API_KEY")
-	if apiKey == "" {
-		return nil, fmt.Errorf("ELEVEN_LABS_API_KEY environment variable is required")
+// ValidateElevenLabsConfig validates the ElevenLabsConfig
+func ValidateElevenLabsConfig(config ElevenLabsConfig) error {
+	if config.APIKey == "" {
+		return fmt.Errorf("eleven labs API key is required")
 	}
 
-	voiceID := os.Getenv("ELEVEN_LABS_VOICE_ID")
+	// Validate stability is in the valid range
+	if config.Stability != 0 && (config.Stability < 0 || config.Stability > 1) {
+		return fmt.Errorf("stability must be between 0 and 1, got %f", config.Stability)
+	}
+
+	// Validate clarity is in the valid range
+	if config.Clarity != 0 && (config.Clarity < 0 || config.Clarity > 1) {
+		return fmt.Errorf("clarity must be between 0 and 1, got %f", config.Clarity)
+	}
+
+	// Validate chunk size is reasonable if specified
+	if config.ChunkSize < 0 {
+		return fmt.Errorf("chunk size must be positive, got %d", config.ChunkSize)
+	}
+
+	return nil
+}
+
+// NewElevenLabsTTS creates a new Eleven Labs TTS instance
+func NewElevenLabsTTS(config ElevenLabsConfig, logger *zap.Logger) (*ElevenLabsTTS, error) {
+	// Validate required configuration
+	if err := ValidateElevenLabsConfig(config); err != nil {
+		return nil, err
+	}
+
+	// Apply defaults where needed
+	apiBaseURL := config.APIBaseURL
+	if apiBaseURL == "" {
+		apiBaseURL = defaultAPIBaseURL
+		logger.Info("Using default API base URL", zap.String("apiBaseURL", apiBaseURL))
+	}
+
+	voiceID := config.VoiceID
 	if voiceID == "" {
 		voiceID = defaultVoiceID
 		logger.Info("Using default voice ID", zap.String("voiceID", voiceID))
 	}
 
-	modelID := os.Getenv("ELEVEN_LABS_MODEL_ID")
+	modelID := config.ModelID
 	if modelID == "" {
-		modelID = "eleven_multilingual_v2"
+		modelID = defaultModelID
 		logger.Info("Using default model ID", zap.String("modelID", modelID))
 	}
 
-	outputFormat := os.Getenv("ELEVEN_LABS_OUTPUT_FORMAT")
+	outputFormat := config.OutputFormat
 	if outputFormat == "" {
 		outputFormat = defaultOutputFormat
 		logger.Info("Using default output format", zap.String("outputFormat", outputFormat))
 	}
 
+	chunkSize := config.ChunkSize
+	if chunkSize == 0 {
+		chunkSize = defaultChunkSize
+		logger.Info("Using default chunk size", zap.Int("chunkSize", chunkSize))
+	}
+
+	// Use provided stability/clarity or defaults
+	stability := config.Stability
+	if stability == 0 {
+		stability = defaultStability
+		logger.Info("Using default stability", zap.Float64("stability", stability))
+	}
+
+	clarity := config.Clarity
+	if clarity == 0 {
+		clarity = defaultClarity
+		logger.Info("Using default clarity", zap.Float64("clarity", clarity))
+	}
+
 	return &ElevenLabsTTS{
-		apiKey:       apiKey,
+		apiKey:       config.APIKey,
+		apiBaseURL:   apiBaseURL,
 		voiceID:      voiceID,
 		modelID:      modelID,
 		outputFormat: outputFormat,
-		stability:    0.5,  // Default stability
-		clarity:      0.75, // Default clarity (similarity_boost)
+		chunkSize:    chunkSize,
+		stability:    stability,
+		clarity:      clarity,
 		logger:       logger,
 	}, nil
 }
@@ -122,7 +203,7 @@ func (e *ElevenLabsTTS) ConvertTextToSpeech(ctx context.Context, text string) (<
 
 	// Create HTTP request with streaming optimizations
 	url := fmt.Sprintf("%s/text-to-speech/%s/stream?output_format=%s&enable_logging=false",
-		elevenLabsAPIBaseURL, e.voiceID, e.outputFormat)
+		e.apiBaseURL, e.voiceID, e.outputFormat)
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(requestBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
@@ -172,7 +253,7 @@ func (e *ElevenLabsTTS) ConvertTextToSpeech(ctx context.Context, text string) (<
 			zap.String("contentLength", resp.Header.Get("Content-Length")))
 
 		// Stream the audio data in chunks
-		buffer := make([]byte, chunkSize)
+		buffer := make([]byte, e.chunkSize)
 		totalBytes := 0
 		chunkCount := 0
 
@@ -249,9 +330,46 @@ func (e *ElevenLabsTTS) SetOutputFormat(format string) {
 	e.logger.Info("Updated output format", zap.String("outputFormat", format))
 }
 
+// NewElevenLabsConfigFromEnv creates a new ElevenLabsConfig from environment variables
+// This is a helper function to simplify the creation of a properly configured ElevenLabsConfig
+func NewElevenLabsConfigFromEnv() ElevenLabsConfig {
+	// Read required API key
+	apiKey := os.Getenv("ELEVEN_LABS_API_KEY")
+
+	// Read optional parameters with defaults
+	config := ElevenLabsConfig{
+		APIKey:       apiKey,
+		APIBaseURL:   os.Getenv("ELEVEN_LABS_API_BASE_URL"),
+		VoiceID:      os.Getenv("ELEVEN_LABS_VOICE_ID"),
+		ModelID:      os.Getenv("ELEVEN_LABS_MODEL_ID"),
+		OutputFormat: os.Getenv("ELEVEN_LABS_OUTPUT_FORMAT"),
+	}
+
+	// Parse numeric values from environment
+	if chunkSizeStr := os.Getenv("ELEVEN_LABS_CHUNK_SIZE"); chunkSizeStr != "" {
+		if chunkSize, err := strconv.Atoi(chunkSizeStr); err == nil && chunkSize > 0 {
+			config.ChunkSize = chunkSize
+		}
+	}
+
+	if stabilityStr := os.Getenv("ELEVEN_LABS_STABILITY"); stabilityStr != "" {
+		if stability, err := strconv.ParseFloat(stabilityStr, 64); err == nil && stability >= 0 && stability <= 1 {
+			config.Stability = stability
+		}
+	}
+
+	if clarityStr := os.Getenv("ELEVEN_LABS_CLARITY"); clarityStr != "" {
+		if clarity, err := strconv.ParseFloat(clarityStr, 64); err == nil && clarity >= 0 && clarity <= 1 {
+			config.Clarity = clarity
+		}
+	}
+
+	return config
+}
+
 // GetAvailableVoices retrieves available voices from Eleven Labs API
 func (e *ElevenLabsTTS) GetAvailableVoices(ctx context.Context) ([]map[string]interface{}, error) {
-	url := fmt.Sprintf("%s/voices", elevenLabsAPIBaseURL)
+	url := fmt.Sprintf("%s/voices", e.apiBaseURL)
 
 	httpReq, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {

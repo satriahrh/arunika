@@ -15,7 +15,8 @@ func TestNewElevenLabsTTS(t *testing.T) {
 
 	// Test without API key
 	os.Unsetenv("ELEVEN_LABS_API_KEY")
-	_, err := NewElevenLabsTTS(logger)
+	config := NewElevenLabsConfigFromEnv()
+	_, err := NewElevenLabsTTS(config, logger)
 	if err == nil {
 		t.Error("Expected error when API key is not set")
 	}
@@ -24,7 +25,8 @@ func TestNewElevenLabsTTS(t *testing.T) {
 	os.Setenv("ELEVEN_LABS_API_KEY", "test-api-key")
 	defer os.Unsetenv("ELEVEN_LABS_API_KEY")
 
-	tts, err := NewElevenLabsTTS(logger)
+	config = NewElevenLabsConfigFromEnv()
+	tts, err := NewElevenLabsTTS(config, logger)
 	if err != nil {
 		t.Fatalf("Failed to create ElevenLabsTTS: %v", err)
 	}
@@ -43,7 +45,8 @@ func TestElevenLabsTTS_SetVoiceSettings(t *testing.T) {
 	os.Setenv("ELEVEN_LABS_API_KEY", "test-api-key")
 	defer os.Unsetenv("ELEVEN_LABS_API_KEY")
 
-	tts, err := NewElevenLabsTTS(logger)
+	config := NewElevenLabsConfigFromEnv()
+	tts, err := NewElevenLabsTTS(config, logger)
 	if err != nil {
 		t.Fatalf("Failed to create ElevenLabsTTS: %v", err)
 	}
@@ -64,7 +67,8 @@ func TestElevenLabsTTS_SetVoiceID(t *testing.T) {
 	os.Setenv("ELEVEN_LABS_API_KEY", "test-api-key")
 	defer os.Unsetenv("ELEVEN_LABS_API_KEY")
 
-	tts, err := NewElevenLabsTTS(logger)
+	config := NewElevenLabsConfigFromEnv()
+	tts, err := NewElevenLabsTTS(config, logger)
 	if err != nil {
 		t.Fatalf("Failed to create ElevenLabsTTS: %v", err)
 	}
@@ -82,7 +86,8 @@ func TestElevenLabsTTS_ConvertTextToSpeech_EmptyText(t *testing.T) {
 	os.Setenv("ELEVEN_LABS_API_KEY", "test-api-key")
 	defer os.Unsetenv("ELEVEN_LABS_API_KEY")
 
-	tts, err := NewElevenLabsTTS(logger)
+	config := NewElevenLabsConfigFromEnv()
+	tts, err := NewElevenLabsTTS(config, logger)
 	if err != nil {
 		t.Fatalf("Failed to create ElevenLabsTTS: %v", err)
 	}
@@ -108,7 +113,8 @@ func TestElevenLabsTTS_ConvertTextToSpeech_Integration(t *testing.T) {
 
 	logger := zap.NewNop() // Use no-op logger for integration test
 
-	tts, err := NewElevenLabsTTS(logger)
+	config := NewElevenLabsConfigFromEnv()
+	tts, err := NewElevenLabsTTS(config, logger)
 	if err != nil {
 		t.Fatalf("Failed to create ElevenLabsTTS: %v", err)
 	}

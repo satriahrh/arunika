@@ -30,7 +30,8 @@ func main() {
 	}
 
 	// Create TTS service
-	ttsService, err := tts.NewElevenLabsTTS(logger)
+	ttsConfig := tts.NewElevenLabsConfigFromEnv()
+	ttsService, err := tts.NewElevenLabsTTS(ttsConfig, logger)
 	if err != nil {
 		logger.Fatal("Failed to create TTS service", zap.Error(err))
 	}
