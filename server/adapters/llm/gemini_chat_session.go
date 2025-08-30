@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"go.uber.org/zap"
@@ -12,22 +13,110 @@ import (
 
 // GeminiChatSession implements the ChatSession interface
 type GeminiChatSession struct {
-	client  *genai.Client
-	logger  *zap.Logger
-	model   string
-	history []*genai.Content
+	client          *genai.Client
+	logger          *zap.Logger
+	model           string
+	temperature     float32
+	topP            float32
+	topK            float32
+	maxOutputTokens int
+	timeoutSeconds  int
+	safetySettings  []*genai.SafetySetting
+	systemPrompt    string
+	history         []*genai.Content
 }
 
-// NewGeminiChatSession creates a new chat session with history
-func NewGeminiChatSession(client *genai.Client, logger *zap.Logger, model string, history []repositories.ChatMessage) (*GeminiChatSession, error) {
+// ValidateGeminiConfig validates the GeminiConfig
+func ValidateGeminiConfig(config GeminiConfig) error {
+	if config.APIKey == "" {
+		return fmt.Errorf("Google AI API key is required")
+	}
+
+	// Validate temperature is in the valid range
+	if config.Temperature != 0 && (config.Temperature < 0 || config.Temperature > 1) {
+		return fmt.Errorf("temperature must be between 0 and 1, got %f", config.Temperature)
+	}
+
+	// Validate topP is in the valid range
+	if config.TopP != 0 && (config.TopP < 0 || config.TopP > 1) {
+		return fmt.Errorf("topP must be between 0 and 1, got %f", config.TopP)
+	}
+
+	// Validate topK is positive if specified
+	if config.TopK < 0 {
+		return fmt.Errorf("topK must be positive, got %f", config.TopK)
+	}
+
+	// Validate timeout is reasonable if specified
+	if config.TimeoutSeconds < 0 {
+		return fmt.Errorf("timeout must be positive, got %d", config.TimeoutSeconds)
+	}
+
+	return nil
+}
+
+// NewGeminiChatSession creates a new chat session with config and history
+func NewGeminiChatSession(client *genai.Client, config GeminiConfig, logger *zap.Logger, history []repositories.ChatMessage) (*GeminiChatSession, error) {
+	// Validate required configuration
+	if err := ValidateGeminiConfig(config); err != nil {
+		return nil, err
+	}
+
 	// Convert repository format to Gemini format
 	geminiHistory := convertRepositoryToGeminiFormat(history)
 
+	// Apply defaults where needed
+	model := config.Model
+	if model == "" {
+		model = defaultModel
+		logger.Info("Using default model", zap.String("model", model))
+	}
+
+	temperature := config.Temperature
+	if temperature == 0 {
+		temperature = float32(defaultTemperature)
+		logger.Info("Using default temperature", zap.Float32("temperature", temperature))
+	}
+
+	topP := config.TopP
+	if topP == 0 {
+		topP = float32(defaultTopP)
+		logger.Info("Using default topP", zap.Float32("topP", topP))
+	}
+
+	topK := config.TopK
+	if topK == 0 {
+		topK = float32(defaultTopK)
+		logger.Info("Using default topK", zap.Float32("topK", topK))
+	}
+
+	maxOutputTokens := config.MaxOutputTokens
+	if maxOutputTokens == 0 {
+		maxOutputTokens = defaultMaxTokens
+		logger.Info("Using default maxOutputTokens", zap.Int("maxOutputTokens", maxOutputTokens))
+	}
+
+	timeoutSeconds := config.TimeoutSeconds
+	if timeoutSeconds == 0 {
+		timeoutSeconds = defaultTimeoutSeconds
+		logger.Info("Using default timeoutSeconds", zap.Int("timeoutSeconds", timeoutSeconds))
+	}
+
+	// Use the hardcoded safety settings
+	logger.Info("Using hardcoded safety settings and system prompt")
+
 	return &GeminiChatSession{
-		client:  client,
-		logger:  logger,
-		model:   model,
-		history: geminiHistory,
+		client:          client,
+		logger:          logger,
+		model:           model,
+		temperature:     temperature,
+		topP:            topP,
+		topK:            topK,
+		maxOutputTokens: maxOutputTokens,
+		timeoutSeconds:  timeoutSeconds,
+		safetySettings:  GeminiHardcodedConfig.SafetySettings,
+		systemPrompt:    GeminiHardcodedConfig.SystemPrompt,
+		history:         geminiHistory,
 	}, nil
 }
 
@@ -37,17 +126,7 @@ func (s *GeminiChatSession) SendMessage(ctx context.Context, message repositorie
 	var contents []*genai.Content
 
 	// Add system instruction as the first message
-	systemPrompt := `You are a friendly, caring AI companion for children. Your responses should be:
-- Safe, appropriate, and educational for children ages 4-12
-- Warm, encouraging, and supportive
-- Simple to understand but engaging
-- Never scary, violent, or inappropriate
-- Helpful in learning and development
-- Always maintain a positive, nurturing tone
-
-Remember to keep responses conversational and age-appropriate.`
-
-	contents = append(contents, genai.NewContentFromText(systemPrompt, genai.RoleUser))
+	contents = append(contents, genai.NewContentFromText(s.systemPrompt, genai.RoleUser))
 
 	// Add existing history (already in Gemini format)
 	contents = append(contents, s.history...)
@@ -56,34 +135,17 @@ Remember to keep responses conversational and age-appropriate.`
 	userContent := genai.NewContentFromText(message.Content, genai.RoleUser)
 	contents = append(contents, userContent)
 
-	// Configure settings for child-friendly responses using the correct API
+	// Configure settings using the session's configuration
 	config := &genai.GenerateContentConfig{
-		SafetySettings: []*genai.SafetySetting{
-			{
-				Category:  "HARM_CATEGORY_HARASSMENT",
-				Threshold: "BLOCK_MEDIUM_AND_ABOVE",
-			},
-			{
-				Category:  "HARM_CATEGORY_HATE_SPEECH",
-				Threshold: "BLOCK_MEDIUM_AND_ABOVE",
-			},
-			{
-				Category:  "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-				Threshold: "BLOCK_LOW_AND_ABOVE",
-			},
-			{
-				Category:  "HARM_CATEGORY_DANGEROUS_CONTENT",
-				Threshold: "BLOCK_LOW_AND_ABOVE",
-			},
-		},
-		Temperature:     genai.Ptr(float32(0.7)), // Slightly creative but controlled
-		TopP:            genai.Ptr(float32(0.8)),
-		TopK:            genai.Ptr(float32(40)),
-		MaxOutputTokens: 500, // Reasonable response length
+		SafetySettings:  s.safetySettings,
+		Temperature:     genai.Ptr(s.temperature),
+		TopP:            genai.Ptr(s.topP),
+		TopK:            genai.Ptr(s.topK),
+		MaxOutputTokens: int32(s.maxOutputTokens),
 	}
 
 	// Add timeout to context if not already set
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(s.timeoutSeconds)*time.Second)
 	defer cancel()
 
 	// Add retry logic
@@ -153,15 +215,8 @@ func (s *GeminiChatSession) History() ([]repositories.ChatMessage, error) {
 
 // createFallbackResponse creates a fallback response message
 func (s *GeminiChatSession) createFallbackResponse() repositories.ChatMessage {
-	fallbacks := []string{
-		"I'm thinking really hard about that, can you ask me again?",
-		"My brain needs a little rest, let's try talking about something else!",
-		"I'm having trouble understanding right now, but I'm still here with you!",
-		"Let me think about that... maybe you can help me by asking in a different way?",
-		"I'm learning new things every day! Can you tell me more about what you're thinking?",
-	}
-
 	// Simple pseudo-random selection based on current time
+	fallbacks := GeminiHardcodedConfig.Fallbacks
 	index := int(time.Now().UnixNano()) % len(fallbacks)
 
 	fallbackMessage := repositories.ChatMessage{

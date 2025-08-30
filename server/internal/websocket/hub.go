@@ -14,6 +14,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/satriahrh/arunika/server/adapters/stt"
+	"github.com/satriahrh/arunika/server/adapters/tts"
 	"github.com/satriahrh/arunika/server/domain/repositories"
 )
 
@@ -134,6 +135,7 @@ type AudioSession struct {
 	SpeechToTextRepository repositories.SpeechToText
 	SpeechToTextStream     repositories.SpeechToTextStreaming
 	ChatSession            repositories.ChatSession
+	TextToSpeechRepository repositories.TextToSpeech
 }
 
 // HandleWebSocket handles websocket requests from the peer.
@@ -371,6 +373,22 @@ func (c *Client) handleAudioSessionStart(msg map[string]interface{}) {
 
 	session, ok := c.audioSessions[sessionID]
 	if !ok {
+		// Initialize TTS repository
+		ttsRepoConfig := tts.NewElevenLabsConfigFromEnv()
+		ttsRepo, err := tts.NewElevenLabsTTS(ttsRepoConfig, c.logger)
+		if err != nil {
+			c.logger.Error("Failed to initialize TTS repository",
+				zap.String("sessionID", sessionID),
+				zap.Error(err))
+			response = map[string]interface{}{
+				"type":       "audio_session_started",
+				"session_id": sessionID,
+				"timestamp":  time.Now().Unix(),
+				"status":     "tts_not_ready",
+			}
+			return
+		}
+
 		session = &AudioSession{
 			SessionID:   sessionID,
 			StartTime:   time.Now(),
@@ -381,6 +399,7 @@ func (c *Client) handleAudioSessionStart(msg map[string]interface{}) {
 
 			SpeechToTextContext:    context.Background(),
 			SpeechToTextRepository: &stt.GoogleSpeechToText{}, // Replace with actual repository
+			TextToSpeechRepository: ttsRepo,
 		}
 	}
 
@@ -524,6 +543,41 @@ func (c *Client) responseAudio(sessionID string, finalTranscription string) {
 		zap.String("deviceID", c.deviceID),
 		zap.String("sessionID", sessionID),
 		zap.String("response", chatResponse.Content))
+
+	audioDataChan, err := session.TextToSpeechRepository.ConvertTextToSpeech(ctx, chatResponse.Content)
+	if err != nil {
+		c.logger.Error("Failed to convert text to speech",
+			zap.String("deviceID", c.deviceID),
+			zap.String("sessionID", sessionID),
+			zap.Error(err))
+		return
+	}
+
+	responseBytes, _ := json.Marshal(map[string]interface{}{
+		"type":       "audio_response_started",
+		"session_id": sessionID,
+		"timestamp":  time.Now().Unix(),
+	})
+	c.send <- WriteData{
+		Type:    websocket.TextMessage,
+		Payload: responseBytes,
+	}
+	for audioData := range audioDataChan {
+		c.send <- WriteData{
+			Type:    websocket.BinaryMessage,
+			Payload: audioData,
+		}
+	}
+
+	responseBytes, _ = json.Marshal(map[string]interface{}{
+		"type":       "audio_response_ended",
+		"session_id": sessionID,
+		"timestamp":  time.Now().Unix(),
+	})
+	c.send <- WriteData{
+		Type:    websocket.TextMessage,
+		Payload: responseBytes,
+	}
 }
 
 // responseWithSampleAlso deprecated
