@@ -19,12 +19,12 @@ import (
 
 const (
 	defaultAPIBaseURL   = "https://api.elevenlabs.io/v1"
-	defaultVoiceID      = "21m00Tcm4TlvDq8ikWAM"   // Rachel voice
-	defaultChunkSize    = 1024                     // Size of audio chunks to stream
-	defaultOutputFormat = "pcm_24000"              // PCM format for real-time applications
-	defaultModelID      = "eleven_multilingual_v2" // Default model ID
-	defaultStability    = 0.5                      // Default voice stability
-	defaultClarity      = 0.75                     // Default voice clarity/similarity_boost
+	defaultVoiceID      = "21m00Tcm4TlvDq8ikWAM" // Rachel voice
+	defaultChunkSize    = 1024                   // Size of audio chunks to stream
+	defaultOutputFormat = "pcm_24000"            // PCM format for real-time applications
+	defaultModelID      = "eleven_flash_v2_5"    // Default model ID
+	defaultStability    = 0.5                    // Default voice stability
+	defaultClarity      = 0.75                   // Default voice clarity/similarity_boost
 )
 
 // ElevenLabsConfig holds configuration for the ElevenLabsTTS adapter
