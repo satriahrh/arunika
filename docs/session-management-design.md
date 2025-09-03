@@ -110,12 +110,15 @@ deactivate SERVER
 
 ### 7. Scaling Considerations
 - Session sharding for high volume
+   Do simple approach for now, no sharding.
 - Connection pooling for MongoDB
 - WebSocket connection distribution across multiple servers
 
 ### 8. Session Recovery Mechanism
 - What happens if server crashes during a session
+   Make sure the message and required information has been persisted
 - How to resume interrupted conversations
+   Everytime device is reconnected, check for existing session. Either to continue or create a new one.
 
 ### 9. Multiple Device Support
 - There is no multiple device support for a single session.
@@ -123,8 +126,8 @@ deactivate SERVER
 - Session data is not shared between devices.
 
 ### 10. Rate Limiting and Abuse Prevention
-- Limit number of active sessions per device
-- Prevent session creation spam
+- One device can only create one session at a time.
+- One device can only activate one session at a time.
 
 ## Next Steps
 
