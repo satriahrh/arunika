@@ -53,7 +53,7 @@ deactivate SERVER
 ```json
 {
   "_id": "ObjectId",
-  "device_id": "DeviceIdentifier",
+  "device_id": "Reference to Device Document",
   "created_at": "Timestamp",
   "last_active_at": "Timestamp",
   "last_message_at": "Timestamp",
@@ -74,6 +74,23 @@ deactivate SERVER
   "metadata": {
     "language": "id-ID",
     "user_preferences": {}
+  }
+}
+```
+
+#### Device Document Structure
+```json
+{
+  "_id": "ObjectId",
+  "device_token": "Unique device authentication token",
+  "name": "Device name or identifier",
+  "created_at": "Timestamp",
+  "last_active_at": "Timestamp",
+  "status": "active|inactive|revoked",
+  "metadata": {
+    "model": "Device model",
+    "os_version": "Operating system version",
+    "location": "Optional location data"
   }
 }
 ```
