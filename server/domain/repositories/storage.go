@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/satriahrh/arunika/server/domain/entities"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 // UserRepository defines data access methods for users
@@ -46,4 +47,16 @@ type MessageRepository interface {
 	GetByTimeRange(ctx context.Context, conversationID string, start, end time.Time) ([]*entities.Message, error)
 	Update(ctx context.Context, message *entities.Message) error
 	Delete(ctx context.Context, id string) error
+}
+
+// SessionRepository defines data access methods for conversation sessions
+type SessionRepository interface {
+	Create(ctx context.Context, session *entities.Session) error
+	GetByID(ctx context.Context, id primitive.ObjectID) (*entities.Session, error)
+	GetActiveByDeviceID(ctx context.Context, deviceID string) (*entities.Session, error)
+	GetByDeviceID(ctx context.Context, deviceID string, limit int) ([]*entities.Session, error)
+	Update(ctx context.Context, session *entities.Session) error
+	Delete(ctx context.Context, id primitive.ObjectID) error
+	ExpireSessions(ctx context.Context) error // Clean up expired sessions
+	AddMessage(ctx context.Context, sessionID primitive.ObjectID, message entities.SessionMessage) error
 }

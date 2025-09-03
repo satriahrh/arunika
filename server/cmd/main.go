@@ -11,6 +11,8 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.uber.org/zap"
 
 	"github.com/satriahrh/arunika/server/adapters"
@@ -42,14 +44,30 @@ func main() {
 		logger.Fatal("Failed to create Gemini LLM", zap.Error(err))
 	}
 
+	// Initialize MongoDB connection and session repository
+	mongoClient, sessionRepo, err := initMongoDB(logger)
+	if err != nil {
+		logger.Fatal("Failed to initialize MongoDB", zap.Error(err))
+	}
+	defer func() {
+		if err := mongoClient.Disconnect(context.Background()); err != nil {
+			logger.Error("Failed to disconnect from MongoDB", zap.Error(err))
+		}
+	}()
+
 	// Bootstrap with demo devices for development (in production, devices would be provisioned through separate APIs)
 	if err := bootstrapDemoDevices(deviceRepo, logger); err != nil {
 		logger.Warn("Failed to bootstrap demo devices", zap.Error(err))
 	}
 
-	// Initialize WebSocket hub with conversation service
-	hub := websocket.NewHub(geminiLLMRepo, logger)
+	// Initialize WebSocket hub with conversation service and session repository
+	hub := websocket.NewHub(geminiLLMRepo, sessionRepo, logger)
 	go hub.Run()
+
+	// Start session cleanup service
+	cleanupService := websocket.NewSessionCleanupService(sessionRepo, logger)
+	cleanupService.Start()
+	defer cleanupService.Stop()
 
 	// Initialize API routes
 	api.InitRoutes(e, hub, deviceRepo, logger)
@@ -127,4 +145,43 @@ func bootstrapDemoDevices(deviceRepo *adapters.MemoryDeviceRepository, logger *z
 	}
 
 	return nil
+}
+
+// initMongoDB initializes MongoDB connection and repositories
+func initMongoDB(logger *zap.Logger) (*mongo.Client, *adapters.MongoSessionRepository, error) {
+	// Get MongoDB connection string from environment
+	mongoURI := os.Getenv("MONGODB_URI")
+	if mongoURI == "" {
+		mongoURI = "mongodb://localhost:27017" // Default for development
+	}
+
+	dbName := os.Getenv("MONGODB_DATABASE")
+	if dbName == "" {
+		dbName = "arunika" // Default database name
+	}
+
+	// Create MongoDB client
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	clientOptions := options.Client().ApplyURI(mongoURI)
+	client, err := mongo.Connect(ctx, clientOptions)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Ping the database to verify connection
+	if err = client.Ping(ctx, nil); err != nil {
+		logger.Warn("Failed to ping MongoDB, proceeding anyway", zap.Error(err))
+	} else {
+		logger.Info("Connected to MongoDB", zap.String("uri", mongoURI), zap.String("database", dbName))
+	}
+
+	// Get database
+	db := client.Database(dbName)
+
+	// Create session repository
+	sessionRepo := adapters.NewMongoSessionRepository(db, logger)
+
+	return client, sessionRepo.(*adapters.MongoSessionRepository), nil
 }
