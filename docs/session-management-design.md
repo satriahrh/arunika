@@ -17,68 +17,25 @@ We will use the following intuitive message types for WebSocket communication:
 
 When a client connects and wants to start a conversation:
 
-```
-CLIENT                                  SERVER
-  |                                       |
-  |  WebSocket Connection + Auth Token    |
-  |-------------------------------------->|
-  |                                       | [Authenticate device]
-  |       WebSocket Connected             |
-  |<--------------------------------------|
-  |                                       |
-  |  {                                    |
-  |    "type": "listening_start",         |
-  |    "session_id": "<optional>",        | [If missing or invalid,
-  |    "create_new": true|false           |  generate new session_id]
-  |  }                                    |
-  |-------------------------------------->|
-  |                                       | [Create session in DB]
-  |  {                                    |
-  |    "type": "listening_started",       |
-  |    "session_id": "<id>",              |
-  |    "is_new_session": true|false,      |
-  |    "expires_at": timestamp            |
-  |  }                                    |
-  |<--------------------------------------|
-  |                                       |
-```
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CLIENT
+    participant SERVER
+CLIENT ->>+ SERVER: WebSocket Connection + Auth Token
+Note right of SERVER: Authenticate device
+SERVER ->> CLIENT: WebSocket Connected
+CLIENT ->> SERVER: { "type": "listening_start" }
+Note right of SERVER: If no session exists,<br/>create a new session
+CLIENT -->> SERVER: [Binary Audio Data]
+Note right of SERVER: Process with STT
+CLIENT ->> SERVER: { "type": "listening_end" }
+Note right of SERVER: Finalize STT<br/>Process with LLM<br/>Generate TTS
+SERVER ->> CLIENT: { "type": "speaking_start" }
+SERVER -->> CLIENT: [Binary Audio Data]
+SERVER ->> CLIENT: { "type": "speaking_end" }
 
-#### Audio Processing Flow
-
-```
-CLIENT                                  SERVER
-  |                                       |
-  |  [Binary Audio Data]                  |
-  |-------------------------------------->| [Process with STT]
-  |  ...more chunks...                    | [Accumulate transcription]
-  |-------------------------------------->|
-  |                                       |
-  |  {                                    |
-  |    "type": "listening_end",           |
-  |    "session_id": "<id>"               |
-  |  }                                    |
-  |-------------------------------------->|
-  |                                       | [Finalize STT]
-  |                                       | [Process with LLM]
-  |                                       | [Generate TTS]
-  |  {                                    |
-  |    "type": "speaking_start",          |
-  |    "session_id": "<id>",              |
-  |    "response_text": "text version"    |
-  |  }                                    |
-  |<--------------------------------------|
-  |                                       |
-  |  [Binary Audio Data]                  |
-  |<--------------------------------------|
-  |  ...more chunks...                    |
-  |<--------------------------------------|
-  |                                       |
-  |  {                                    |
-  |    "type": "speaking_end",            |
-  |    "session_id": "<id>"               |
-  |  }                                    |
-  |<--------------------------------------|
-  |                                       |
+deactivate SERVER
 ```
 
 ## Database Integration
@@ -87,8 +44,7 @@ CLIENT                                  SERVER
 
 - **MongoDB** will be used for rapid development with flexible schema
 - Collections needed:
-  - `sessions`: Store active conversation sessions
-  - `messages`: Store conversation history linked to sessions
+  - `sessions`: Store active conversation sessions with embedded messages
   - `devices`: Store device information
 
 ### Data Structures
@@ -97,34 +53,27 @@ CLIENT                                  SERVER
 ```json
 {
   "_id": "ObjectId",
-  "session_id": "UUID",
   "device_id": "DeviceIdentifier",
   "created_at": "Timestamp",
   "last_active_at": "Timestamp",
+  "last_message_at": "Timestamp",
   "expires_at": "Timestamp",
   "status": "active|expired|terminated",
+  "messages": [
+    {
+      "timestamp": "Timestamp",
+      "role": "user|assistant",
+      "content": "Message text content",
+      "duration_ms": 1500,
+      "metadata": {
+        "transcription_confidence": 0.95,
+        "emotion": "neutral"
+      }
+    }
+  ],
   "metadata": {
-    "total_interactions": 0,
     "language": "id-ID",
     "user_preferences": {}
-  }
-}
-```
-
-#### Message Document Structure
-```json
-{
-  "_id": "ObjectId",
-  "session_id": "UUID",
-  "device_id": "DeviceIdentifier",
-  "timestamp": "Timestamp",
-  "role": "user|assistant",
-  "content": "Message text content",
-  "audio_file_path": "optional/path/to/audio.wav",
-  "duration_ms": 1500,
-  "metadata": {
-    "transcription_confidence": 0.95,
-    "emotion": "neutral"
   }
 }
 ```
@@ -145,8 +94,9 @@ CLIENT                                  SERVER
 - Handle connection drops during conversation
 
 ### 4. Session Context Transfer
-- How to maintain conversation context when re-using a session
-- LLM integration for conversation history retrieval
+- Continue existing session if last message was within 30 minutes
+- Create new session if last message was more than 30 minutes ago
+- LLM integration for conversation history retrieval from embedded messages
 
 ### 5. Authentication Enhancements
 - Session token in addition to device token
