@@ -96,6 +96,7 @@ deactivate SERVER
 ### 4. Session Context Transfer
 - Continue existing session if last message was within 30 minutes
 - Create new session if last message was more than 30 minutes ago
+   We aim for simplicity for now, might revisit later.
 - LLM integration for conversation history retrieval from embedded messages
 
 ### 5. Authentication Enhancements
@@ -117,8 +118,9 @@ deactivate SERVER
 - How to resume interrupted conversations
 
 ### 9. Multiple Device Support
-- Can multiple devices access the same conversation session?
-- How to handle synchronization if yes
+- There is no multiple device support for a single session.
+- Each device must establish its own session.
+- Session data is not shared between devices.
 
 ### 10. Rate Limiting and Abuse Prevention
 - Limit number of active sessions per device
