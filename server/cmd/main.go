@@ -64,6 +64,11 @@ func main() {
 	hub := websocket.NewHub(geminiLLMRepo, sessionRepo, logger)
 	go hub.Run()
 
+	// Start session cleanup service
+	cleanupService := websocket.NewSessionCleanupService(sessionRepo, logger)
+	cleanupService.Start()
+	defer cleanupService.Stop()
+
 	// Initialize API routes
 	api.InitRoutes(e, hub, deviceRepo, logger)
 
