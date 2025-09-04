@@ -26,3 +26,10 @@ type DeviceRepository interface {
 	// ValidateDevice validates device credentials for authentication
 	ValidateDevice(serialNumber, secret string) (*entities.Device, error)
 }
+
+// SessionRepository defines data access methods for device sessions
+type SessionRepository interface {
+	Create(ctx context.Context, session *entities.Session) error
+	GetLastByDeviceID(ctx context.Context, deviceID string) (*entities.Session, error)
+	Update(ctx context.Context, session *entities.Session) error
+}

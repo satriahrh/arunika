@@ -117,14 +117,11 @@ func authenticateDevice() (string, string, error) {
 }
 
 func testChunkedAudio(c *websocket.Conn) {
-	sessionID := fmt.Sprintf("session_%d", time.Now().Unix())
 
 	// Test 1: Start audio session
-	log.Printf("🚀 Testing audio session start for session: %s at %s", sessionID, time.Now().Format("15:04:05.000"))
+	log.Printf("🚀 Testing audio session start for session.")
 	startMessage := map[string]interface{}{
-		"type":       "audio_session_start",
-		"session_id": sessionID,
-		"timestamp":  time.Now().Unix(),
+		"type": "listening_start",
 	}
 
 	if err := sendJSONMessage(c, startMessage); err != nil {
@@ -134,7 +131,7 @@ func testChunkedAudio(c *websocket.Conn) {
 	time.Sleep(500 * time.Millisecond)
 
 	// Test 2: Send binary audio chunks from sample_audio.wav
-	log.Printf("📤 Testing binary audio chunks from sample_audio.wav for session: %s", sessionID)
+	log.Printf("📤 Testing binary audio chunks from sample_audio.wav for session.")
 
 	// Read the sample audio file
 	audioFilePath := filepath.Join(".", "sample_audio.wav")
@@ -175,11 +172,9 @@ func testChunkedAudio(c *websocket.Conn) {
 	log.Printf("📤 Finished sending audio chunks in %v", audioDuration)
 
 	// Test 3: End audio session
-	log.Printf("🛑 Testing audio session end for session: %s at %s", sessionID, time.Now().Format("15:04:05.000"))
+	log.Printf("🛑 Testing audio session end for session.")
 	endMessage := map[string]interface{}{
-		"type":       "audio_session_end",
-		"session_id": sessionID,
-		"timestamp":  time.Now().Unix(),
+		"type": "listening_end",
 	}
 
 	if err := sendJSONMessage(c, endMessage); err != nil {
@@ -187,7 +182,7 @@ func testChunkedAudio(c *websocket.Conn) {
 		return
 	}
 
-	log.Printf("✅ All tests completed for session: %s! Waiting for server response...", sessionID)
+	log.Println("✅ All tests completed for session! Waiting for server response...")
 }
 
 func sendJSONMessage(c *websocket.Conn, message map[string]interface{}) error {
@@ -228,7 +223,7 @@ func handleIncomingMessage(c *websocket.Conn, done chan struct{}) {
 				}
 
 				switch msgType {
-				case "audio_response_started":
+				case "speaking_start":
 					audioResponseStartTime = time.Now()
 					audioChunkCount = 0
 					log.Printf("🎵 Audio response started for session: %s at %s", sessionID, audioResponseStartTime.Format("15:04:05.000"))
@@ -245,7 +240,7 @@ func handleIncomingMessage(c *websocket.Conn, done chan struct{}) {
 						return
 					}
 					log.Printf("📁 Created audio response file: %s", filepath)
-				case "audio_response_ended":
+				case "speaking_end":
 					duration := time.Since(audioResponseStartTime)
 					log.Printf("🎵 Audio response ended for session: %s", sessionID)
 					log.Printf("📊 Audio response stats - Duration: %v, Chunks received: %d", duration, audioChunkCount)
@@ -253,9 +248,9 @@ func handleIncomingMessage(c *websocket.Conn, done chan struct{}) {
 						audioFile.Close()
 						log.Println("📁 Audio response file closed")
 					}
-				case "audio_session_started":
+				case "listening_start":
 					log.Printf("✅ Audio session start acknowledged for session: %s", sessionID)
-				case "audio_session_ended":
+				case "listening_end":
 					log.Printf("✅ Audio session end acknowledged for session: %s", sessionID)
 					if totalChunks, exists := msg["total_chunks"]; exists {
 						log.Printf("📊 Session stats - Total chunks processed: %v", totalChunks)
