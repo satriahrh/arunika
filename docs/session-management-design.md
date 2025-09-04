@@ -55,10 +55,7 @@ deactivate SERVER
   "_id": "ObjectId",
   "device_id": "Reference to Device Document",
   "created_at": "Timestamp",
-  "last_active_at": "Timestamp",
   "last_message_at": "Timestamp",
-  "expires_at": "Timestamp",
-  "status": "active|expired|terminated",
   "messages": [
     {
       "timestamp": "Timestamp",

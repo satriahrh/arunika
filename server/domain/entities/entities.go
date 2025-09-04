@@ -24,25 +24,6 @@ type User struct {
 	UpdatedAt time.Time `json:"updated_at" db:"updated_at"`
 }
 
-// Conversation represents a conversation session
-type Conversation struct {
-	ID        string     `json:"id" db:"id"`
-	DeviceID  string     `json:"device_id" db:"device_id"`
-	UserID    string     `json:"user_id" db:"user_id"`
-	StartedAt time.Time  `json:"started_at" db:"started_at"`
-	EndedAt   *time.Time `json:"ended_at" db:"ended_at"`
-	CreatedAt time.Time  `json:"created_at" db:"created_at"`
-}
-
-// Message represents a single message in a conversation
-type Message struct {
-	ID             string    `json:"id" db:"id"`
-	ConversationID string    `json:"conversation_id" db:"conversation_id"`
-	Type           string    `json:"type" db:"type"` // "user" or "assistant"
-	Content        string    `json:"content" db:"content"`
-	Timestamp      time.Time `json:"timestamp" db:"timestamp"`
-}
-
 // Domain validation methods
 func (u *User) Validate() error {
 	if u.Email == "" {
