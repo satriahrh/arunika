@@ -77,6 +77,7 @@ func NewHub(
 		unregister:  make(chan *Client),
 		llm:         llm,
 		ttsRepo:     ttsRepo,
+		sttRepo:     sttRepo,
 		sessionRepo: sessionRepo,
 		logger:      logger,
 	}
@@ -291,10 +292,6 @@ func (c *Client) processMessage(message []byte) {
 
 // processBinaryAudioChunk handles binary audio data
 func (c *Client) processBinaryAudioChunk(data []byte) {
-	c.logger.Info("Received binary audio chunk",
-		zap.String("deviceID", c.deviceID),
-		zap.Int("size", len(data)))
-
 	// For now, we'll assume there's an active session to update counters
 	// In a full implementation, you'd extract session ID from binary headers
 	// or track the current active session per device
@@ -327,14 +324,15 @@ func (c *Client) processBinaryAudioChunk(data []byte) {
 		return
 	}
 
-	c.logger.Debug("Updated session with binary chunk",
-		zap.String("sessionID", c.session.ID),
-		zap.Int("totalChunks", c.chunkCount))
+	c.logger.Debug("Received binary audio chunk and processed",
+		zap.String("deviceID", c.deviceID),
+		zap.Int("chunkCount", c.chunkCount),
+		zap.Int("size", len(data)))
 }
 
 // handleListeningStart handles the start of an audio streaming session
 func (c *Client) handleListeningStart(msg map[string]interface{}) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	c.mutex.Lock()
@@ -343,9 +341,8 @@ func (c *Client) handleListeningStart(msg map[string]interface{}) {
 	c.listeningStart = time.Now()
 
 	var response map[string]interface{} = map[string]interface{}{
-		"type":       "listening_start",
-		"session_id": c.session.ID,
-		"timestamp":  c.listeningStart.Unix(),
+		"type":      "listening_start",
+		"timestamp": c.listeningStart.Unix(),
 	}
 
 	defer func() {
@@ -361,7 +358,7 @@ func (c *Client) handleListeningStart(msg map[string]interface{}) {
 	}()
 
 	var err error
-	if c.session != nil {
+	if c.session == nil {
 		c.session, err = c.hub.sessionRepo.GetLastByDeviceID(ctx, c.deviceID)
 		if err != nil {
 			c.logger.Error("Failed to get last session by device ID",
@@ -371,8 +368,7 @@ func (c *Client) handleListeningStart(msg map[string]interface{}) {
 			return
 		}
 	}
-
-	if !c.session.CanContinueThisSession() {
+	if c.session == nil || !c.session.CanContinueThisSession() {
 		c.session = &entities.Session{
 			DeviceID: c.deviceID,
 		}
@@ -385,6 +381,8 @@ func (c *Client) handleListeningStart(msg map[string]interface{}) {
 			return
 		}
 	}
+
+	response["session_id"] = c.session.ID
 
 	if c.chatSession == nil {
 		c.chatSession, err = c.hub.llm.GenerateChat(ctx, c.session.Messages)
@@ -412,7 +410,7 @@ func (c *Client) handleListeningStart(msg map[string]interface{}) {
 		audioConfig.Encoding = v
 	}
 
-	c.sttStreaming, err = c.hub.sttRepo.InitTranscribeStreaming(ctx, audioConfig)
+	c.sttStreaming, err = c.hub.sttRepo.InitTranscribeStreaming(context.Background(), audioConfig)
 	if err != nil {
 		c.logger.Error("Failed to initialize streaming transcription",
 			zap.String("sessionID", c.session.ID),
