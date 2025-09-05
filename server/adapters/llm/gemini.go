@@ -9,6 +9,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/genai"
 
+	"github.com/satriahrh/arunika/server/domain/entities"
 	"github.com/satriahrh/arunika/server/domain/repositories"
 )
 
@@ -181,6 +182,6 @@ func NewGeminiConfigFromEnv() GeminiConfig {
 }
 
 // GenerateChat creates a chat session with history
-func (g *GeminiLLM) GenerateChat(ctx context.Context, history []repositories.ChatMessage) (repositories.ChatSession, error) {
+func (g *GeminiLLM) GenerateChat(ctx context.Context, history []entities.Message) (repositories.ChatSession, error) {
 	return NewGeminiChatSession(g.client, g.config, g.logger, history)
 }

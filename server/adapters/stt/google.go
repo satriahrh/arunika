@@ -90,7 +90,6 @@ func (g *GoogleSpeechToTextStream) Stream(data []byte) error {
 
 	if len(data) > 0 {
 		g.audioReceived = true
-		fmt.Println("Received audio chunk of size:", len(data))
 
 		// Send audio data to Google
 		if err := g.stream.Send(&speechpb.StreamingRecognizeRequest{

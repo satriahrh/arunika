@@ -15,6 +15,9 @@ import (
 
 	"github.com/satriahrh/arunika/server/adapters"
 	"github.com/satriahrh/arunika/server/adapters/llm"
+	"github.com/satriahrh/arunika/server/adapters/mongo"
+	"github.com/satriahrh/arunika/server/adapters/stt"
+	"github.com/satriahrh/arunika/server/adapters/tts"
 	"github.com/satriahrh/arunika/server/domain/entities"
 	"github.com/satriahrh/arunika/server/internal/api"
 	"github.com/satriahrh/arunika/server/internal/websocket"
@@ -36,7 +39,25 @@ func main() {
 	e.Use(middleware.CORS())
 
 	// Initialize adapters
+	// Initialize MongoDB client
+	mongoClient, err := mongo.NewClient(logger)
+	if err != nil {
+		logger.Fatal("Failed to create MongoDB client", zap.Error(err))
+	}
+	defer func() {
+		ctx := context.Background()
+		mongoClient.Close(ctx)
+	}()
+
+	// Initialize repositories
+	sessionRepo := mongo.NewSessionRepository(mongoClient.Database)
 	deviceRepo := adapters.NewMemoryDeviceRepository()
+	sttRepo := &stt.GoogleSpeechToText{}
+	ttsRepoConfig := tts.NewElevenLabsConfigFromEnv()
+	ttsRepo, err := tts.NewElevenLabsTTS(ttsRepoConfig, logger)
+	if err != nil {
+		logger.Fatal("Failed to create TTS repository", zap.Error(err))
+	}
 	geminiLLMRepo, err := llm.NewGeminiLLM(logger)
 	if err != nil {
 		logger.Fatal("Failed to create Gemini LLM", zap.Error(err))
@@ -48,7 +69,7 @@ func main() {
 	}
 
 	// Initialize WebSocket hub with conversation service
-	hub := websocket.NewHub(geminiLLMRepo, logger)
+	hub := websocket.NewHub(geminiLLMRepo, ttsRepo, sttRepo, sessionRepo, logger)
 	go hub.Run()
 
 	// Initialize API routes
@@ -76,10 +97,10 @@ func main() {
 
 	logger.Info("Server is shutting down...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
 
-	if err := e.Shutdown(ctx); err != nil {
+	if err := e.Shutdown(shutdownCtx); err != nil {
 		logger.Fatal("Server forced to shutdown", zap.Error(err))
 	}
 

@@ -55,10 +55,7 @@ deactivate SERVER
   "_id": "ObjectId",
   "device_id": "Reference to Device Document",
   "created_at": "Timestamp",
-  "last_active_at": "Timestamp",
   "last_message_at": "Timestamp",
-  "expires_at": "Timestamp",
-  "status": "active|expired|terminated",
   "messages": [
     {
       "timestamp": "Timestamp",
@@ -87,6 +84,9 @@ deactivate SERVER
   "created_at": "Timestamp",
   "last_active_at": "Timestamp",
   "status": "active|inactive|revoked",
+  "serial_number": "Device serial number",
+  "secret_key": "Device secret key",
+  "owner_id": "Owner identifier",
   "metadata": {
     "model": "Device model",
     "os_version": "Operating system version",

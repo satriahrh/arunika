@@ -8,7 +8,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/genai"
 
-	"github.com/satriahrh/arunika/server/domain/repositories"
+	"github.com/satriahrh/arunika/server/domain/entities"
 )
 
 // GeminiChatSession implements the ChatSession interface
@@ -56,7 +56,7 @@ func ValidateGeminiConfig(config GeminiConfig) error {
 }
 
 // NewGeminiChatSession creates a new chat session with config and history
-func NewGeminiChatSession(client *genai.Client, config GeminiConfig, logger *zap.Logger, history []repositories.ChatMessage) (*GeminiChatSession, error) {
+func NewGeminiChatSession(client *genai.Client, config GeminiConfig, logger *zap.Logger, history []entities.Message) (*GeminiChatSession, error) {
 	// Validate required configuration
 	if err := ValidateGeminiConfig(config); err != nil {
 		return nil, err
@@ -121,7 +121,7 @@ func NewGeminiChatSession(client *genai.Client, config GeminiConfig, logger *zap
 }
 
 // SendMessage sends a message and gets a response, updating the history
-func (s *GeminiChatSession) SendMessage(ctx context.Context, message repositories.ChatMessage) (repositories.ChatMessage, error) {
+func (s *GeminiChatSession) SendMessage(ctx context.Context, message entities.Message) (entities.Message, error) {
 	// Prepare contents for API call (system prompt + history + current message)
 	var contents []*genai.Content
 
@@ -195,8 +195,8 @@ func (s *GeminiChatSession) SendMessage(ctx context.Context, message repositorie
 	// Add both messages to history
 	s.history = append(s.history, userContent, responseContent)
 
-	responseMessage := repositories.ChatMessage{
-		Role:    repositories.DollRole,
+	responseMessage := entities.Message{
+		Role:    entities.DollRole,
 		Content: responseText,
 	}
 
@@ -209,18 +209,18 @@ func (s *GeminiChatSession) SendMessage(ctx context.Context, message repositorie
 }
 
 // History returns the current conversation history
-func (s *GeminiChatSession) History() ([]repositories.ChatMessage, error) {
+func (s *GeminiChatSession) History() ([]entities.Message, error) {
 	return convertGeminiToRepositoryFormat(s.history), nil
 }
 
 // createFallbackResponse creates a fallback response message
-func (s *GeminiChatSession) createFallbackResponse() repositories.ChatMessage {
+func (s *GeminiChatSession) createFallbackResponse() entities.Message {
 	// Simple pseudo-random selection based on current time
 	fallbacks := GeminiHardcodedConfig.Fallbacks
 	index := int(time.Now().UnixNano()) % len(fallbacks)
 
-	fallbackMessage := repositories.ChatMessage{
-		Role:    repositories.DollRole,
+	fallbackMessage := entities.Message{
+		Role:    entities.DollRole,
 		Content: fallbacks[index],
 	}
 
@@ -240,17 +240,17 @@ func min(a, b int) int {
 }
 
 // convertRepositoryToGeminiFormat converts repository messages to Gemini format
-func convertRepositoryToGeminiFormat(messages []repositories.ChatMessage) []*genai.Content {
+func convertRepositoryToGeminiFormat(messages []entities.Message) []*genai.Content {
 	var contents []*genai.Content
 
 	for _, msg := range messages {
 		var role genai.Role
 		switch msg.Role {
-		case repositories.UserRole:
+		case entities.UserRole:
 			role = genai.RoleUser
-		case repositories.DollRole:
+		case entities.DollRole:
 			role = genai.RoleModel
-		case repositories.SystemRole:
+		case entities.SystemRole:
 			role = genai.RoleUser // Treat system messages as user messages in Gemini
 		default:
 			role = genai.RoleUser // Default to user role
@@ -263,18 +263,18 @@ func convertRepositoryToGeminiFormat(messages []repositories.ChatMessage) []*gen
 }
 
 // convertGeminiToRepositoryFormat converts Gemini content to repository messages
-func convertGeminiToRepositoryFormat(contents []*genai.Content) []repositories.ChatMessage {
-	var messages []repositories.ChatMessage
+func convertGeminiToRepositoryFormat(contents []*genai.Content) []entities.Message {
+	var messages []entities.Message
 
 	for _, content := range contents {
-		var role repositories.Role
+		var role entities.Role
 		switch content.Role {
 		case genai.RoleUser:
-			role = repositories.UserRole
+			role = entities.UserRole
 		case genai.RoleModel:
-			role = repositories.DollRole
+			role = entities.DollRole
 		default:
-			role = repositories.UserRole // Default to user role
+			role = entities.UserRole // Default to user role
 		}
 
 		// Extract text from parts (limiting to text only as specified)
@@ -286,7 +286,7 @@ func convertGeminiToRepositoryFormat(contents []*genai.Content) []repositories.C
 		}
 
 		if text != "" {
-			messages = append(messages, repositories.ChatMessage{
+			messages = append(messages, entities.Message{
 				Role:    role,
 				Content: text,
 			})

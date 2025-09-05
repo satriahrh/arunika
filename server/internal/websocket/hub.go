@@ -3,6 +3,7 @@ package websocket
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,8 +14,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"go.uber.org/zap"
 
-	"github.com/satriahrh/arunika/server/adapters/stt"
-	"github.com/satriahrh/arunika/server/adapters/tts"
+	"github.com/satriahrh/arunika/server/domain/entities"
 	"github.com/satriahrh/arunika/server/domain/repositories"
 )
 
@@ -55,19 +55,31 @@ type Hub struct {
 	// Mutex for thread-safe access to clients map
 	mu sync.RWMutex
 
-	llm repositories.LargeLanguageModel
+	llm         repositories.LargeLanguageModel
+	ttsRepo     repositories.TextToSpeech
+	sttRepo     repositories.SpeechToText
+	sessionRepo repositories.SessionRepository
 
 	logger *zap.Logger
 }
 
 // NewHub creates a new WebSocket hub
-func NewHub(llm repositories.LargeLanguageModel, logger *zap.Logger) *Hub {
+func NewHub(
+	llm repositories.LargeLanguageModel,
+	ttsRepo repositories.TextToSpeech,
+	sttRepo repositories.SpeechToText,
+	sessionRepo repositories.SessionRepository,
+	logger *zap.Logger,
+) *Hub {
 	return &Hub{
-		clients:    make(map[string]*Client),
-		register:   make(chan *Client),
-		unregister: make(chan *Client),
-		llm:        llm,
-		logger:     logger,
+		clients:     make(map[string]*Client),
+		register:    make(chan *Client),
+		unregister:  make(chan *Client),
+		llm:         llm,
+		ttsRepo:     ttsRepo,
+		sttRepo:     sttRepo,
+		sessionRepo: sessionRepo,
+		logger:      logger,
 	}
 }
 
@@ -117,25 +129,14 @@ type Client struct {
 	logger *zap.Logger
 
 	// Audio streaming session management
-	audioSessions map[string]*AudioSession
-	sessionMutex  sync.RWMutex
-}
+	session      *entities.Session
+	sttStreaming repositories.SpeechToTextStreaming
+	chatSession  repositories.ChatSession
 
-// AudioSession manages an ongoing audio streaming session
-type AudioSession struct {
-	SessionID   string
-	StartTime   time.Time
-	LastChunk   time.Time
-	ChunkCount  int
-	TotalChunks int
-	ExpectedSeq int
-	IsActive    bool
+	chunkCount     int
+	listeningStart time.Time
 
-	SpeechToTextContext    context.Context
-	SpeechToTextRepository repositories.SpeechToText
-	SpeechToTextStream     repositories.SpeechToTextStreaming
-	ChatSession            repositories.ChatSession
-	TextToSpeechRepository repositories.TextToSpeech
+	mutex sync.Mutex
 }
 
 // HandleWebSocket handles websocket requests from the peer.
@@ -153,12 +154,11 @@ func HandleWebSocket(hub *Hub, c echo.Context, logger *zap.Logger) error {
 	}
 
 	client := &Client{
-		hub:           hub,
-		conn:          conn,
-		send:          make(chan WriteData, 256),
-		deviceID:      deviceID,
-		logger:        logger,
-		audioSessions: make(map[string]*AudioSession),
+		hub:      hub,
+		conn:     conn,
+		send:     make(chan WriteData, 256),
+		deviceID: deviceID,
+		logger:   logger,
 	}
 
 	client.hub.register <- client
@@ -180,12 +180,11 @@ func HandleWebSocketWithAuth(hub *Hub, c echo.Context, deviceID string, logger *
 	}
 
 	client := &Client{
-		hub:           hub,
-		conn:          conn,
-		send:          make(chan WriteData, 256),
-		deviceID:      deviceID,
-		logger:        logger,
-		audioSessions: make(map[string]*AudioSession),
+		hub:      hub,
+		conn:     conn,
+		send:     make(chan WriteData, 256),
+		deviceID: deviceID,
+		logger:   logger,
 	}
 
 	client.hub.register <- client
@@ -201,7 +200,6 @@ func HandleWebSocketWithAuth(hub *Hub, c echo.Context, deviceID string, logger *
 // readPump pumps messages from the websocket connection to the hub.
 func (c *Client) readPump() {
 	defer func() {
-		c.cleanupAudioSessions()
 		c.hub.unregister <- c
 		c.conn.Close()
 	}()
@@ -283,81 +281,70 @@ func (c *Client) processMessage(message []byte) {
 	}
 
 	switch msgType {
-	case "audio_session_start":
-		c.handleAudioSessionStart(msg)
-	case "audio_session_end":
-		c.handleAudioSessionEnd(msg)
+	case "listening_start":
+		c.handleListeningStart(msg)
+	case "listening_end":
+		c.handleListeningEnd(msg)
 	default:
 		c.logger.Warn("Unknown message type", zap.String("type", msgType))
 	}
 }
 
-// Helper functions to extract values from map with type safety
-func getStringFromMap(m map[string]interface{}, key string) string {
-	if val, ok := m[key].(string); ok {
-		return val
-	}
-	return ""
-}
-
 // processBinaryAudioChunk handles binary audio data
 func (c *Client) processBinaryAudioChunk(data []byte) {
-	c.logger.Info("Received binary audio chunk",
-		zap.String("deviceID", c.deviceID),
-		zap.Int("size", len(data)))
-
 	// For now, we'll assume there's an active session to update counters
 	// In a full implementation, you'd extract session ID from binary headers
 	// or track the current active session per device
 
-	c.sessionMutex.Lock()
-	defer c.sessionMutex.Unlock()
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
-	// Find any active session for this device (simplified approach)
-	var activeSession *AudioSession
-	for _, session := range c.audioSessions {
-		if session.IsActive {
-			activeSession = session
-			break
-		}
-	}
-
-	if activeSession != nil {
-		// Update session counters
-		activeSession.ChunkCount++
-		activeSession.LastChunk = time.Now()
-
-		// Stream audio data to the speech-to-text service
-		if activeSession.SpeechToTextStream != nil {
-			if err := activeSession.SpeechToTextStream.Stream(data); err != nil {
-				c.logger.Error("Failed to stream audio data",
-					zap.String("sessionID", activeSession.SessionID),
-					zap.Error(err))
-			}
-		}
-
-		c.logger.Debug("Updated session with binary chunk",
-			zap.String("sessionID", activeSession.SessionID),
-			zap.Int("totalChunks", activeSession.ChunkCount))
-	} else {
+	if c.session == nil {
 		c.logger.Warn("Received binary audio chunk but no active session found",
 			zap.String("deviceID", c.deviceID))
+		return
 	}
 
-	// TODO: Process actual audio data with conversation service
+	if c.sttStreaming == nil {
+		c.logger.Warn("No active STT streaming for current session",
+			zap.String("deviceID", c.deviceID),
+			zap.String("sessionID", c.session.ID))
+		return
+	}
+
+	// Update session counters
+	c.chunkCount++
+
+	// Stream audio data to the speech-to-text service
+	if err := c.sttStreaming.Stream(data); err != nil {
+		c.logger.Error("Failed to stream audio data",
+			zap.String("sessionID", c.session.ID),
+			zap.Error(err))
+		// Optionally, you might want to end the session or take other actions here
+		return
+	}
+
+	c.logger.Debug("Received binary audio chunk and processed",
+		zap.String("deviceID", c.deviceID),
+		zap.Int("chunkCount", c.chunkCount),
+		zap.Int("size", len(data)))
 }
 
-// handleAudioSessionStart handles the start of an audio streaming session
-func (c *Client) handleAudioSessionStart(msg map[string]interface{}) {
-	sessionID := getStringFromMap(msg, "session_id")
+// handleListeningStart handles the start of an audio streaming session
+func (c *Client) handleListeningStart(msg map[string]interface{}) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.chunkCount = 0
+	c.listeningStart = time.Now()
+
 	var response map[string]interface{} = map[string]interface{}{
-		"type":       "audio_session_started",
-		"session_id": sessionID,
-		"timestamp":  time.Now().Unix(),
-		"status":     "unknown",
+		"type":      "listening_start",
+		"timestamp": c.listeningStart.Unix(),
 	}
 
-	c.sessionMutex.Lock()
 	defer func() {
 		responseBytes, _ := json.Marshal(response)
 		select {
@@ -368,104 +355,87 @@ func (c *Client) handleAudioSessionStart(msg map[string]interface{}) {
 		default:
 			close(c.send)
 		}
-		c.sessionMutex.Unlock()
 	}()
 
-	session, ok := c.audioSessions[sessionID]
-	if !ok {
-		// Initialize TTS repository
-		ttsRepoConfig := tts.NewElevenLabsConfigFromEnv()
-		ttsRepo, err := tts.NewElevenLabsTTS(ttsRepoConfig, c.logger)
+	var err error
+	if c.session == nil {
+		c.session, err = c.hub.sessionRepo.GetLastByDeviceID(ctx, c.deviceID)
 		if err != nil {
-			c.logger.Error("Failed to initialize TTS repository",
-				zap.String("sessionID", sessionID),
+			c.logger.Error("Failed to get last session by device ID",
+				zap.String("deviceID", c.deviceID),
 				zap.Error(err))
-			response = map[string]interface{}{
-				"type":       "audio_session_started",
-				"session_id": sessionID,
-				"timestamp":  time.Now().Unix(),
-				"status":     "tts_not_ready",
-			}
+			response["error"] = "failed to get last session"
 			return
 		}
-
-		session = &AudioSession{
-			SessionID:   sessionID,
-			StartTime:   time.Now(),
-			LastChunk:   time.Now(),
-			ChunkCount:  0,
-			ExpectedSeq: 0,
-			IsActive:    true,
-
-			SpeechToTextContext:    context.Background(),
-			SpeechToTextRepository: &stt.GoogleSpeechToText{}, // Replace with actual repository
-			TextToSpeechRepository: ttsRepo,
+	}
+	if c.session == nil || !c.session.CanContinueThisSession() {
+		c.session = &entities.Session{
+			DeviceID: c.deviceID,
+		}
+		err := c.hub.sessionRepo.Create(ctx, c.session)
+		if err != nil {
+			c.logger.Error("Failed to create new session",
+				zap.String("deviceID", c.deviceID),
+				zap.Error(err))
+			response["error"] = "failed to create new session"
+			return
 		}
 	}
 
-	// Initialize streaming transcription
-	audioConfig := repositories.AudioConfig{
-		SampleRate: 48000,      // Example sample rate
-		Language:   "id-ID",    // Example language
-		Encoding:   "LINEAR16", // Example encoding
+	response["session_id"] = c.session.ID
+
+	if c.chatSession == nil {
+		c.chatSession, err = c.hub.llm.GenerateChat(ctx, c.session.Messages)
+		if err != nil {
+			c.logger.Error("Failed to create chat session",
+				zap.String("deviceID", c.deviceID),
+				zap.Error(err))
+			response["error"] = "failed to create chat session"
+			return
+		}
 	}
 
-	streamInstance, err := session.SpeechToTextRepository.InitTranscribeStreaming(session.SpeechToTextContext, audioConfig)
+	audioConfig := repositories.AudioConfig{
+		SampleRate: 48000,
+		Language:   "id-ID",
+		Encoding:   "LINEAR16",
+	}
+	if v, ok := msg["sample_rate"].(float64); ok && v > 0 {
+		audioConfig.SampleRate = int(v)
+	}
+	if v, ok := msg["language"].(string); ok && v != "" {
+		audioConfig.Language = v
+	}
+	if v, ok := msg["encoding"].(string); ok && v != "" {
+		audioConfig.Encoding = v
+	}
+
+	c.sttStreaming, err = c.hub.sttRepo.InitTranscribeStreaming(context.Background(), audioConfig)
 	if err != nil {
 		c.logger.Error("Failed to initialize streaming transcription",
-			zap.String("sessionID", sessionID),
+			zap.String("sessionID", c.session.ID),
 			zap.Error(err))
-		response = map[string]interface{}{
-			"type":       "audio_session_started",
-			"session_id": sessionID,
-			"timestamp":  time.Now().Unix(),
-			"status":     "speech_to_text_not_ready",
-		}
+		response["error"] = "failed to initialize transcription"
 		return
 	}
-	session.SpeechToTextStream = streamInstance
-
-	chatSession, err := c.hub.llm.GenerateChat(context.Background(), []repositories.ChatMessage{})
-	if err != nil {
-		c.logger.Error("Failed to generate chat session",
-			zap.String("sessionID", sessionID),
-			zap.Error(err))
-		response = map[string]interface{}{
-			"type":       "audio_session_started",
-			"session_id": sessionID,
-			"timestamp":  time.Now().Unix(),
-			"status":     "chat_not_ready",
-		}
-		return
-	}
-	session.ChatSession = chatSession
-
-	c.audioSessions[sessionID] = session
 
 	c.logger.Info("Audio session started",
 		zap.String("deviceID", c.deviceID),
-		zap.String("sessionID", sessionID))
+		zap.String("sessionID", c.session.ID))
 
-	// Send acknowledgment
-	response = map[string]interface{}{
-		"type":       "audio_session_started",
-		"session_id": sessionID,
-		"timestamp":  time.Now().Unix(),
-		"status":     "ready",
-	}
+	response["message"] = "listening started"
 }
 
-// handleAudioSessionEnd handles the end of an audio streaming session
-func (c *Client) handleAudioSessionEnd(msg map[string]interface{}) {
-	sessionID := getStringFromMap(msg, "session_id")
+// handleListeningEnd handles the end of an audio streaming session
+func (c *Client) handleListeningEnd(msg map[string]interface{}) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
 	var response map[string]interface{} = map[string]interface{}{
-		"type":       "audio_session_ended",
-		"session_id": sessionID,
-		"timestamp":  time.Now().Unix(),
-		"status":     "unknown",
+		"type":       "listening_end",
+		"session_id": c.session.ID,
 	}
 
-	c.sessionMutex.Lock()
 	defer func() {
 		responseBytes, _ := json.Marshal(response)
 		select {
@@ -476,91 +446,79 @@ func (c *Client) handleAudioSessionEnd(msg map[string]interface{}) {
 		default:
 			close(c.send)
 		}
-		c.sessionMutex.Unlock()
 	}()
 
-	session, exists := c.audioSessions[sessionID]
-	if exists {
-		session.IsActive = false
-		// End the streaming transcription and get the result
-		var finalTranscription string
-		var err error
-		if session.SpeechToTextStream != nil {
-			finalTranscription, err = session.SpeechToTextStream.End()
-			if err != nil {
-				c.logger.Error("Failed to end transcription stream",
-					zap.String("deviceID", c.deviceID),
-					zap.String("sessionID", sessionID),
-					zap.Error(err))
-			} else {
-				c.logger.Info("Transcription completed",
-					zap.String("deviceID", c.deviceID),
-					zap.String("sessionID", sessionID),
-					zap.String("transcription", finalTranscription))
-			}
-		}
-
-		go c.responseAudio(sessionID, finalTranscription)
+	var finalTranscription string
+	var err error
+	finalTranscription, err = c.sttStreaming.End()
+	if err != nil {
+		c.logger.Error("Failed to end transcription stream",
+			zap.String("deviceID", c.deviceID),
+			zap.String("sessionID", c.session.ID),
+			zap.Error(err))
+		response["error"] = "failed to end transcription"
+		return
 	}
 
-	// Send acknowledgment
-	response = map[string]interface{}{
-		"type":       "audio_session_ended",
-		"session_id": sessionID,
-		"timestamp":  time.Now().Unix(),
-		"status":     "completed",
-	}
+	c.logger.Info("Transcription completed",
+		zap.String("deviceID", c.deviceID),
+		zap.String("sessionID", c.session.ID),
+		zap.String("transcription", finalTranscription))
 
-	if exists {
-		response["total_chunks"] = session.ChunkCount
-		response["duration"] = time.Since(session.StartTime).Seconds()
+	chatMessage := entities.Message{
+		Timestamp:  c.listeningStart,
+		Role:       entities.UserRole,
+		Content:    finalTranscription,
+		DurationMs: time.Since(c.listeningStart).Milliseconds(),
 	}
+	response["chat"] = chatMessage
+
+	go c.responseAudio(chatMessage)
 
 	c.logger.Info("Starting audio response goroutine",
 		zap.String("deviceID", c.deviceID),
-		zap.String("sessionID", sessionID))
+		zap.String("sessionID", c.session.ID))
+
+	fmt.Println("Adding user message to session:", msg)
 }
 
-func (c *Client) responseAudio(sessionID string, finalTranscription string) {
-	session := c.audioSessions[sessionID]
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+func (c *Client) responseAudio(message entities.Message) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	chatResponse, err := session.ChatSession.SendMessage(ctx, repositories.ChatMessage{
-		Role:    repositories.UserRole,
-		Content: finalTranscription,
-	})
+	chatResponse, err := c.chatSession.SendMessage(ctx, message)
 	if err != nil {
 		c.logger.Error("Failed to send message to chat session",
 			zap.String("deviceID", c.deviceID),
-			zap.String("sessionID", sessionID),
+			zap.String("sessionID", c.session.ID),
 			zap.Error(err))
 		return
 	}
 
 	c.logger.Info("Received chat response",
 		zap.String("deviceID", c.deviceID),
-		zap.String("sessionID", sessionID),
+		zap.String("sessionID", c.session.ID),
 		zap.String("response", chatResponse.Content))
 
-	audioDataChan, err := session.TextToSpeechRepository.ConvertTextToSpeech(ctx, chatResponse.Content)
+	audioDataChan, err := c.hub.ttsRepo.ConvertTextToSpeech(ctx, chatResponse.Content)
 	if err != nil {
 		c.logger.Error("Failed to convert text to speech",
 			zap.String("deviceID", c.deviceID),
-			zap.String("sessionID", sessionID),
+			zap.String("sessionID", c.session.ID),
 			zap.Error(err))
 		return
 	}
 
-	responseBytes, _ := json.Marshal(map[string]interface{}{
-		"type":       "audio_response_started",
-		"session_id": sessionID,
-		"timestamp":  time.Now().Unix(),
-	})
 	c.send <- WriteData{
-		Type:    websocket.TextMessage,
-		Payload: responseBytes,
+		Type: websocket.TextMessage,
+		Payload: func() []byte {
+			responseBytes, _ := json.Marshal(map[string]interface{}{
+				"type":       "speaking_start",
+				"session_id": c.session.ID,
+				"chat":       chatResponse,
+			})
+			return responseBytes
+		}(),
 	}
 	for audioData := range audioDataChan {
 		c.send <- WriteData{
@@ -569,49 +527,54 @@ func (c *Client) responseAudio(sessionID string, finalTranscription string) {
 		}
 	}
 
-	responseBytes, _ = json.Marshal(map[string]interface{}{
-		"type":       "audio_response_ended",
-		"session_id": sessionID,
-		"timestamp":  time.Now().Unix(),
-	})
 	c.send <- WriteData{
-		Type:    websocket.TextMessage,
-		Payload: responseBytes,
+		Type: websocket.TextMessage,
+		Payload: func() []byte {
+			responseBytes, _ := json.Marshal(map[string]interface{}{
+				"type":       "speaking_end",
+				"session_id": c.session.ID,
+				"timestamp":  time.Now().Unix(),
+			})
+			return responseBytes
+		}(),
 	}
+
+	c.session.AddMessage(func(s *entities.Session) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		err := c.hub.sessionRepo.Update(ctx, s)
+		if err != nil {
+			c.logger.Error("Failed to update session with new messages",
+				zap.String("deviceID", c.deviceID),
+				zap.String("sessionID", c.session.ID),
+				zap.Error(err))
+			return err
+		}
+		return nil
+	}, message, chatResponse)
 }
 
 // responseWithSampleAlso deprecated
-func (c *Client) responseWithSampleAlso(sessionID string) {
-	c.sessionMutex.RLock()
-	session, exists := c.audioSessions[sessionID]
-	c.sessionMutex.RUnlock()
+func (c *Client) responseWithSampleAlso() {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
-	if !exists {
-		c.logger.Error("Session not found for audio response",
-			zap.String("deviceID", c.deviceID),
-			zap.String("sessionID", sessionID))
-		return
-	}
-
-	// Wait for the session to end (when IsActive becomes false)
-	for session.IsActive {
-		time.Sleep(100 * time.Millisecond)
-	}
+	time.Sleep(100 * time.Millisecond)
 
 	c.logger.Info("Starting delayed audio response",
 		zap.String("deviceID", c.deviceID),
-		zap.String("sessionID", sessionID),
+		zap.String("sessionID", c.session.ID),
 		zap.String("delay", "5 seconds"))
 
 	time.Sleep(5 * time.Second)
 
 	c.logger.Info("Sending audio response start message",
 		zap.String("deviceID", c.deviceID),
-		zap.String("sessionID", sessionID))
+		zap.String("sessionID", c.session.ID))
 
 	startMessage := map[string]interface{}{
-		"type":       "audio_response_started",
-		"session_id": sessionID,
+		"type":       "speaking_start",
+		"session_id": c.session.ID,
 		"timestamp":  time.Now().Unix(),
 	}
 	responseBytes, _ := json.Marshal(startMessage)
@@ -625,7 +588,7 @@ func (c *Client) responseWithSampleAlso(sessionID string) {
 	if err != nil {
 		c.logger.Error("Failed to read sample audio file for response",
 			zap.String("deviceID", c.deviceID),
-			zap.String("sessionID", sessionID),
+			zap.String("sessionID", c.session.ID),
 			zap.String("filePath", audioFilePath),
 			zap.Error(err))
 		return
@@ -633,7 +596,7 @@ func (c *Client) responseWithSampleAlso(sessionID string) {
 
 	c.logger.Info("Read sample audio file for response",
 		zap.String("deviceID", c.deviceID),
-		zap.String("sessionID", sessionID),
+		zap.String("sessionID", c.session.ID),
 		zap.String("filePath", audioFilePath),
 		zap.Int("totalBytes", len(audioFileData)))
 
@@ -644,7 +607,7 @@ func (c *Client) responseWithSampleAlso(sessionID string) {
 
 	c.logger.Info("Starting to send audio response chunks",
 		zap.String("deviceID", c.deviceID),
-		zap.String("sessionID", sessionID),
+		zap.String("sessionID", c.session.ID),
 		zap.Int("totalChunks", totalChunks),
 		zap.Int("sendingChunks", sendingChunks),
 		zap.Int("chunkSize", chunkSize))
@@ -660,7 +623,7 @@ func (c *Client) responseWithSampleAlso(sessionID string) {
 
 		c.logger.Debug("Sending audio response chunk",
 			zap.String("deviceID", c.deviceID),
-			zap.String("sessionID", sessionID),
+			zap.String("sessionID", c.session.ID),
 			zap.Int("chunkNumber", i+1),
 			zap.Int("chunkSize", len(audioChunk)))
 
@@ -674,16 +637,16 @@ func (c *Client) responseWithSampleAlso(sessionID string) {
 
 	c.logger.Info("Finished sending audio response chunks",
 		zap.String("deviceID", c.deviceID),
-		zap.String("sessionID", sessionID),
+		zap.String("sessionID", c.session.ID),
 		zap.Int("totalChunksSent", sendingChunks))
 
 	c.logger.Info("Sending audio response end message",
 		zap.String("deviceID", c.deviceID),
-		zap.String("sessionID", sessionID))
+		zap.String("sessionID", c.session.ID))
 
 	endMessage := map[string]interface{}{
 		"type":       "audio_response_ended",
-		"session_id": sessionID,
+		"session_id": c.session.ID,
 		"timestamp":  time.Now().Unix(),
 	}
 	responseBytes, _ = json.Marshal(endMessage)
@@ -694,26 +657,5 @@ func (c *Client) responseWithSampleAlso(sessionID string) {
 
 	c.logger.Info("Audio response completed",
 		zap.String("deviceID", c.deviceID),
-		zap.String("sessionID", sessionID))
-}
-
-// cleanupAudioSessions closes all streaming sessions when client disconnects
-func (c *Client) cleanupAudioSessions() {
-	c.sessionMutex.Lock()
-	defer c.sessionMutex.Unlock()
-
-	for sessionID, session := range c.audioSessions {
-		if session.SpeechToTextStream != nil {
-			// End the streaming session (ignore result since we're cleaning up)
-			_, err := session.SpeechToTextStream.End()
-			if err != nil {
-				c.logger.Warn("Error ending speech-to-text stream during cleanup",
-					zap.String("sessionID", sessionID),
-					zap.Error(err))
-			}
-			c.logger.Info("Ended speech-to-text stream for session",
-				zap.String("sessionID", sessionID))
-		}
-		delete(c.audioSessions, sessionID)
-	}
+		zap.String("sessionID", c.session.ID))
 }
