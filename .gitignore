@@ -143,3 +143,6 @@ sdkconfig.old
 # Temporary files
 .tmp/
 .temp/
+
+# Worktree ignore
+worktree/*
